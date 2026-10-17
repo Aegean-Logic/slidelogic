@@ -5,6 +5,7 @@
 
 mod assets;
 mod bench;
+mod icns;
 mod ico;
 mod layers;
 mod parity;
@@ -31,6 +32,8 @@ commands:
   parity          recompute the PowerPoint feature-parity summary in docs/parity-checklist.md
   ico <out.ico> <in.png>...
                   pack square PNGs (<= 256 px) into a Windows .ico (see packaging/icons.sh)
+  icns <out.icns> <in.png>...
+                  pack square PNGs (16-1024 px) into a macOS .icns (see packaging/icons.sh)
 ";
 
 fn main() -> ExitCode {
@@ -46,6 +49,7 @@ fn main() -> ExitCode {
         Some("parity") => parity::run(&root()),
         Some("bench") => bench::run(&root(), &rest),
         Some("ico") => ico::run(&rest),
+        Some("icns") => icns::run(&rest),
         Some("version") => version::run(&root(), &rest),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");

@@ -1,0 +1,13 @@
+SlideLogic app icon (deckcraft.svg, deckcraft-small.svg and every file derived from them in this
+directory: deckcraft-1024.png, deckcraft-macos-512.png, deckcraft.icns, deckcraft.ico, hicolor/).
+
+Original work written for this project by SlideLogic contributors (hand-written SVG geometry in the
+Aegean Logic colour palette; it contains no Aegean Logic logo artwork). No third-party material.
+Licensed like the rest of SlideLogic, under either of
+
+  * Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+  * MIT license (https://opensource.org/licenses/MIT)
+
+at your option.
+
+Regenerate the derived files with packaging/icons.sh.

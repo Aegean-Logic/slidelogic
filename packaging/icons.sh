@@ -1,48 +1,66 @@
 #!/usr/bin/env bash
-# Regenerate the platform app icons from the committed PNGs in assets/app-icon/:
+# Regenerate every app icon from assets/app-icon/deckcraft.svg (48 px and up) and
+# assets/app-icon/deckcraft-small.svg (the simplified glyph, 32 px and below).
 #
-#   assets/app-icon/deckcraft.ico    Windows (16–256 px, from hicolor/*)
-#   assets/app-icon/deckcraft.icns   macOS (16–1024 px, from deckcraft-1024.png; needs sips + iconutil)
+# Needs: resvg (brew install resvg / cargo install resvg). The .ico and .icns are packed with
+# `cargo xtask ico` / `cargo xtask icns`, so this runs on any platform. The outputs are committed,
+# so builds and packaging never need these tools.
 #
-# The PNGs themselves are rendered by SlideLogic from assets/app-icon/icon-source.deckcraft.
-# The outputs are committed, so builds and packaging never need these tools; package scripts
-# call this only when an output is missing.
-#
-#   packaging/icons.sh [ico] [icns]     (default: both)
+#   packaging/icons.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIR="$ROOT/assets/app-icon"
+SVG="$DIR/deckcraft.svg"
+SMALL_SVG="$DIR/deckcraft-small.svg"
 ID="uk.co.aegeanlogic.slidelogic"
-SRC="$DIR/deckcraft-1024.png"
-WANT="${*:-ico icns}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-case " $WANT " in
-  *" ico "*)
-    ICO_PNGS=()
-    for s in 16 24 32 48 64 128 256; do
-      ICO_PNGS+=("$DIR/hicolor/${s}x${s}/apps/$ID.png")
-    done
-    (cd "$ROOT" && cargo run -q -p xtask -- ico "$DIR/deckcraft.ico" "${ICO_PNGS[@]}")
-    echo "wrote $DIR/deckcraft.ico"
-    ;;
-esac
+command -v resvg >/dev/null || { echo "error: resvg not found (brew install resvg)" >&2; exit 1; }
 
-case " $WANT " in
-  *" icns "*)
-    if command -v iconutil >/dev/null && command -v sips >/dev/null; then
-      SET="$TMP/deckcraft.iconset"
-      mkdir -p "$SET"
-      for s in 16 32 128 256 512; do
-        sips -z "$s" "$s" "$SRC" --out "$SET/icon_${s}x${s}.png" >/dev/null
-        d=$((s * 2))
-        sips -z "$d" "$d" "$SRC" --out "$SET/icon_${s}x${s}@2x.png" >/dev/null
-      done
-      iconutil -c icns -o "$DIR/deckcraft.icns" "$SET"
-      echo "wrote $DIR/deckcraft.icns"
-    else
-      echo "warning: sips/iconutil not found (macOS only); deckcraft.icns not regenerated" >&2
-    fi
-    ;;
-esac
+# The artwork is a full-bleed 512 tile (rx=112). Windows and Linux use it as is. macOS icons sit on
+# Apple's grid: an 824/1024 body with a transparent margin, so widen the viewBox to 512*1024/824.
+mac() {
+  sed 's/viewBox="0 0 512 512"/viewBox="-62.136 -62.136 636.272 636.272"/' "$1" >"$2"
+  grep -q 'viewBox="-62.136' "$2" || { echo "error: expected viewBox=\"0 0 512 512\" in $1" >&2; exit 1; }
+}
+MAC="$TMP/mac.svg"
+MAC_SMALL="$TMP/mac-small.svg"
+mac "$SVG" "$MAC"
+mac "$SMALL_SVG" "$MAC_SMALL"
+
+# render <full.svg> <small.svg> <px> <out.png>: the small glyph at 32 px and below, else the full art.
+render() {
+  local src="$1"
+  [ "$3" -le 32 ] && src="$2"
+  resvg -w "$3" -h "$3" "$src" "$4" </dev/null
+}
+
+render "$SVG" "$SMALL_SVG" 1024 "$DIR/deckcraft-1024.png"
+# Runtime window/Dock icon on macOS (for apps/deckcraft to embed); other platforms use hicolor 256.
+render "$MAC" "$MAC_SMALL" 512 "$DIR/deckcraft-macos-512.png"
+
+# Linux hicolor theme.
+for s in 16 24 32 48 64 128 256 512; do
+  mkdir -p "$DIR/hicolor/${s}x${s}/apps"
+  render "$SVG" "$SMALL_SVG" "$s" "$DIR/hicolor/${s}x${s}/apps/$ID.png"
+done
+mkdir -p "$DIR/hicolor/scalable/apps"
+cp "$SVG" "$DIR/hicolor/scalable/apps/$ID.svg"
+
+# Windows .ico.
+ICO_PNGS=()
+for s in 16 20 24 32 40 48 64 128 256; do
+  render "$SVG" "$SMALL_SVG" "$s" "$TMP/ico-$s.png"
+  ICO_PNGS+=("$TMP/ico-$s.png")
+done
+(cd "$ROOT" && cargo run -q -p xtask -- ico "$DIR/deckcraft.ico" "${ICO_PNGS[@]}")
+
+# macOS .icns: one PNG per pixel size; xtask files each under its 1x and @2x slots.
+ICNS_PNGS=()
+for s in 16 32 64 128 256 512 1024; do
+  render "$MAC" "$MAC_SMALL" "$s" "$TMP/icns-$s.png"
+  ICNS_PNGS+=("$TMP/icns-$s.png")
+done
+(cd "$ROOT" && cargo run -q -p xtask -- icns "$DIR/deckcraft.icns" "${ICNS_PNGS[@]}")
+echo "icons written to $DIR"
