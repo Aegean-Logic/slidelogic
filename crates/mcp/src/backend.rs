@@ -127,13 +127,13 @@ impl Backend for Remote {
             self.conn = None;
             self.send(&line).map_err(|e| {
                 self.conn = None;
-                format!("DeckCraft app at {} is not reachable: {e}", self.addr)
+                format!("SlideLogic app at {} is not reachable: {e}", self.addr)
             })?;
         }
         self.receive(id).map_err(|e| {
             self.conn = None;
             format!(
-                "lost the reply from the DeckCraft app at {} ({e}); the command may or may not have run, check the document before retrying",
+                "lost the reply from the SlideLogic app at {} ({e}); the command may or may not have run, check the document before retrying",
                 self.addr
             )
         })?
@@ -144,7 +144,7 @@ impl Backend for Remote {
     }
 
     fn describe(&self) -> String {
-        format!("connected to the DeckCraft app at {}", self.addr)
+        format!("connected to the SlideLogic app at {}", self.addr)
     }
 }
 

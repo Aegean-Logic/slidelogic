@@ -27,4 +27,4 @@ jobs:
     uses: storytold/craft-common-actions/.github/workflows/windows-arm64.yml@main
     with:
       app-name: deckcraft
-      app-dir: DeckCraft
+      app-dir: SlideLogic

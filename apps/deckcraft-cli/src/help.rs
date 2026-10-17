@@ -116,8 +116,8 @@ calls it.
     Subcommand {
         name: "app",
         usage: "app [--port PORT] COMMAND [PARAMS] | --method METHOD [PARAMS]",
-        summary: "run a command in the DeckCraft app started with --control",
-        details: "Sends one request to the DeckCraft app started with `deckcraft --control PORT` (port 7979 by default)
+        summary: "run a command in the SlideLogic app started with --control",
+        details: "Sends one request to the SlideLogic app started with `deckcraft --control PORT` (port 7979 by default)
 and prints its answer as JSON. COMMAND [PARAMS] runs a command, as run --cmd does; --method METHOD
 [PARAMS] calls a control-channel method such as ui.screenshot. PARAMS is a JSON object.
 
@@ -129,7 +129,7 @@ and prints its answer as JSON. COMMAND [PARAMS] runs a command, as run --cmd doe
         usage: "mcp [--connect PORT] [--sample] [--automation-read-root DIR] [--automation-write-root DIR]",
         summary: "serve the commands to an agent over MCP on stdio",
         details: "Runs a Model Context Protocol server on stdin and stdout. It works on its own presentation without a
-window, or with --connect PORT (or host:port) on the DeckCraft app started with --control PORT.
+window, or with --connect PORT (or host:port) on the SlideLogic app started with --control PORT.
 --sample opens the sample presentation.
 
 --automation-read-root DIR and --automation-write-root DIR confine every file the agent's commands read
@@ -150,8 +150,8 @@ median and slowest of N runs (5 by default, 1 to 1000) as a table, or as JSON wi
     Subcommand {
         name: "links",
         usage: "links",
-        summary: "print the DeckCraft community and project links",
-        details: "Prints the DeckCraft community and project links.",
+        summary: "print the SlideLogic project links",
+        details: "Prints the SlideLogic project links (the Aegean Logic website and the source).",
     },
     Subcommand { name: "version", usage: "--version", summary: "print the version", details: "Prints the version of deckcraft-cli." },
 ];
@@ -170,7 +170,7 @@ pub fn overview() -> String {
     let list: Vec<String> =
         SUBCOMMANDS.iter().map(|s| format!("  {:<width$}  {}", s.usage.split(' ').next().unwrap_or_default(), s.summary)).collect();
     format!(
-        "deckcraft-cli works on DeckCraft presentations (.deckcraft, .pptx) without a window.
+        "deckcraft-cli works on SlideLogic presentations (.deckcraft, .pptx) without a window.
 
 {}
 

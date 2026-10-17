@@ -1087,7 +1087,7 @@ fn album_seed(s: &Session) -> Result<Value> {
     let st = s.doc()?;
     let slides: Vec<&deckcraft_model::Slide> =
         ids.iter().filter_map(|sid| u32::try_from(*sid).ok()).filter_map(|n| st.doc.slide(deckcraft_model::SlideId(n))).collect();
-    let theme_now = st.doc.masters.first().map(|m| m.theme.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| "DeckCraft".into());
+    let theme_now = st.doc.masters.first().map(|m| m.theme.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| "SlideLogic".into());
     let inferred = infer_album(&slides, &theme_now);
     let mark = slides.first().and_then(|sl| sl.raw_ext.as_deref().and_then(parse_album_mark));
     let (layout, frame, captions, grayscale, theme) = if let Some(mark) = mark {
@@ -2197,7 +2197,7 @@ mod icon_and_picture_tests {
         assert!(mark.contains("theme=Harbor"), "{mark}");
         assert_eq!(s.active().unwrap().doc.slides[1].name, "Photo Album");
         s.execute("edit.undo", &json!({})).unwrap();
-        assert_eq!(theme_name(&s), "DeckCraft");
+        assert_eq!(theme_name(&s), "SlideLogic");
         assert_eq!(n_slides(&s), 1);
     }
 
@@ -2216,7 +2216,7 @@ mod icon_and_picture_tests {
         assert!(s.execute("insert.photoAlbumEdit", &json!({"pictures": [pic("b.png")], "layout": "2"})).is_err());
         assert_eq!(n_slides(&s), before + 1);
         assert_eq!(pictures(&s, 1).len(), 1);
-        assert_eq!(theme_name(&s), "DeckCraft");
+        assert_eq!(theme_name(&s), "SlideLogic");
     }
 
     #[test]

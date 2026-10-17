@@ -1,7 +1,7 @@
 # MCP server
 
 `deckcraft-cli mcp` runs a Model Context Protocol server on stdio. By default it drives its own
-headless engine (no window); with `--connect PORT` it drives a running DeckCraft started with
+headless engine (no window); with `--connect PORT` it drives a running SlideLogic started with
 `--control PORT`, so an agent and a person can work on the same deck. `--sample` opens the sample
 deck.
 
@@ -63,7 +63,7 @@ config works across the suite) keep the agent to the folders you give it:
   given once (`--flag <dir>` or `--flag=<dir>`).
 
 The flags confine the in-process server, so `--connect` together with them is an error: the server
-would otherwise talk to an app that isn't confined. DeckCraft's desktop app has no equivalent flags
+would otherwise talk to an app that isn't confined. SlideLogic's desktop app has no equivalent flags
 yet, so a running app (`deckcraft --control`) is not confined. `--sample` is the operator's own
 choice and is opened before the roots apply.
 

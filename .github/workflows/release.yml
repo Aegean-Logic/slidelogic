@@ -23,7 +23,7 @@ jobs:
     uses: storytold/craft-common-actions/.github/workflows/release.yml@main
     with:
       app-name: deckcraft
-      app-title: DeckCraft
+      app-title: SlideLogic
       craft-fonts-ref: 43913056ce82a3fdad0ef69f6b88d1dc922a8104
       version: ${{ inputs.version }}
     secrets:

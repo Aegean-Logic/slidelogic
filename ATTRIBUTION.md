@@ -1,12 +1,14 @@
 # Attribution
 
-Every asset DeckCraft includes, bundles, embeds at build time or shows in its documentation, with
+Every asset SlideLogic includes, bundles, embeds at build time or shows in its documentation, with
 its author, source and licence. The policy is in [AGENTS.md](AGENTS.md) §1. `cargo xtask assets`
 fails if a file under `assets/`, `docs/images/` or `docs/brand/` is missing from this table.
 
-DeckCraft contains **no Microsoft, Adobe, Avid or Autodesk iconography, images, fonts, themes,
+SlideLogic contains **no Microsoft, Adobe, Avid or Autodesk iconography, images, fonts, themes,
 templates or other assets**. Its themes, colour schemes, layouts, preset-shape geometry, sample
-deck and UI icons are original work of the DeckCraft contributors (drawn or generated in code).
+deck and UI icons are original work of the SlideLogic and DeckCraft contributors (drawn or
+generated in code). The one exception is the Aegean Logic brand files in `docs/brand/`: Aegean
+Logic trademarks, not open source, used under `docs/brand/LICENSE-brand.txt`.
 Icons placed from Insert › Icons are Lucide paths (ISC; Feather-derived icons MIT), not Microsoft
 artwork. The ribbon and menu icons stay original drawings.
 
@@ -14,16 +16,16 @@ artwork. The ribbon and menu icons stay original drawings.
 
 | Asset | Author | Source | Licence | Used for |
 |---|---|---|---|---|
-| `docs/brand/artcraft-logo.svg`, `docs/brand/artcraft-logo.png` | ArtCraft Team | ArtCraft brand kit (project owner) | ArtCraft trademark, `docs/brand/LICENSE-brand.txt` (not open source) | README header |
-| `docs/brand/artcraft-logo-white.svg`, `docs/brand/artcraft-logo-white.png` | ArtCraft Team | ArtCraft brand kit | ArtCraft trademark, `docs/brand/LICENSE-brand.txt` | README header (dark mode) |
-| `docs/brand/artcraft-mark.svg`, `docs/brand/artcraft-mark.png` | ArtCraft Team | ArtCraft brand kit | ArtCraft trademark, `docs/brand/LICENSE-brand.txt` | README footer, About |
-| `docs/brand/artcraft-mark-black.svg`, `docs/brand/artcraft-mark-black.png` | ArtCraft Team | ArtCraft brand kit | ArtCraft trademark, `docs/brand/LICENSE-brand.txt` | Mark for light backgrounds |
-| `docs/brand/LICENSE-brand.txt` | ArtCraft Team | craftrules `standards/license-files` | — (licence text) | Terms for the ArtCraft marks |
-| `assets/app-icon/deckcraft-1024.png`, `assets/app-icon/hicolor/*/apps/ai.storyteller.deckcraft.png` | DeckCraft contributors | rendered by DeckCraft from `assets/app-icon/icon-source.deckcraft` (shapes only) | MIT OR Apache-2.0 | Placeholder app icon (presentation board) until the mascot icon is drawn |
+| `docs/brand/aegean-logic-lockup.svg` | Aegean Logic | Aegean Logic brand kit (primary lockup) | Aegean Logic brand terms (`docs/brand/LICENSE-brand.txt`) | Trademark, not open source; README header on light backgrounds |
+| `docs/brand/aegean-logic-lockup-dark.svg` | Aegean Logic | Aegean Logic brand kit (reversed lockup) | Aegean Logic brand terms | Trademark; README header on dark backgrounds |
+| `docs/brand/aegean-logic-mark.svg` | Aegean Logic | Aegean Logic brand kit (favicon mark) | Aegean Logic brand terms | Trademark; README footer |
+| `docs/brand/aegean-logic-appicon.svg` | Aegean Logic | Aegean Logic brand kit (app icon, light) | Aegean Logic brand terms | Trademark |
+| `docs/brand/LICENSE-brand.txt` | (licence text) | Aegean Logic | — | Terms for the Aegean Logic marks |
+| `assets/app-icon/deckcraft-1024.png`, `assets/app-icon/hicolor/*/apps/uk.co.aegeanlogic.slidelogic.png` | DeckCraft contributors | rendered by DeckCraft from `assets/app-icon/icon-source.deckcraft` (shapes only) | MIT OR Apache-2.0 | Placeholder app icon (presentation board) until the mascot icon is drawn |
 | `packaging/macos/dmg/background.svg` | @XusBadia | DeckCraft macOS DMG window background, original work for this repository (2026-10-08), derived from the DeckCraft app icon `assets/app-icon/deckcraft-1024.png` (referenced via `<image>`, not copied); text is outlined Inter / JetBrains Mono glyph paths | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) | Finder window of the macOS DMG; `packaging/macos/dmg/generate.py` renders it to `background.tiff` |
 | `packaging/macos/dmg/background.tiff` | @XusBadia | Rendered from `packaging/macos/dmg/background.svg` by `packaging/macos/dmg/generate.py` | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) | 1x + 2x HiDPI TIFF for the macOS DMG window; includes the app icon (see its row) and LittleCMS's built-in sRGB profile ("No copyright, use freely") |
 | `assets/app-icon/deckcraft.icns`, `assets/app-icon/deckcraft.ico` | DeckCraft contributors | generated from the PNGs above by `packaging/icons.sh` (sips/iconutil, `cargo xtask ico`) | MIT OR Apache-2.0 | macOS and Windows app icons |
-| `assets/app-icon/hicolor/scalable/apps/ai.storyteller.deckcraft.svg` | DeckCraft contributors | the shapes of `assets/app-icon/icon-source.deckcraft` written out as SVG (same coordinates, colours and corner radii) | MIT OR Apache-2.0 | Scalable app icon for Linux desktops (hicolor theme) |
+| `assets/app-icon/hicolor/scalable/apps/uk.co.aegeanlogic.slidelogic.svg` | DeckCraft contributors | the shapes of `assets/app-icon/icon-source.deckcraft` written out as SVG (same coordinates, colours and corner radii) | MIT OR Apache-2.0 | Scalable app icon for Linux desktops (hicolor theme) |
 | `assets/app-icon/icon-source.deckcraft` | DeckCraft contributors | made with `deckcraft-cli run` (see git history) | MIT OR Apache-2.0 | Source of the placeholder icon |
 | `docs/images/editor.png`, `docs/images/shape-format.png`, `docs/images/format-pane.png`, `docs/images/slide-sorter.png`, `docs/images/dark-mode.png`, `docs/images/sample-deck.png` | DeckCraft contributors | Screenshots of DeckCraft and slides rendered by `deckcraft-cli` from the built-in sample deck (original content; Inter font, OFL-1.1) | MIT OR Apache-2.0 | README screenshots |
 | `crates/media/tests/fixtures/tone*` (`tone.mp3`, `.m4a`, `.aac`, `.ogg`, `.opus`, `.flac`, `.wma`, `tone-alac.m4a`) | DeckCraft contributors | synthesised 0.5 s 440 Hz sine, encoded by `crates/media/tests/fixtures/make.sh` (ffmpeg as the encoder only) | CC0-1.0 | Audio decoding tests |

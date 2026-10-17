@@ -68,8 +68,8 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         builtin_themes().into_iter().next().unwrap_or_else(|| Theme {
-            name: "DeckCraft".into(),
-            colors: ColorScheme { name: "DeckCraft".into(), colors: [Rgba::BLACK; 12] },
+            name: "SlideLogic".into(),
+            colors: ColorScheme { name: "SlideLogic".into(), colors: [Rgba::BLACK; 12] },
             fonts: FontScheme::default(),
             format: FormatScheme::default(),
             raw_extra: None,
@@ -118,7 +118,7 @@ pub fn default_format() -> FormatScheme {
         })
     };
     FormatScheme {
-        name: "DeckCraft".into(),
+        name: "SlideLogic".into(),
         fills: vec![Fill::solid(ph()), grad(110000, 92000), grad(105000, 80000)],
         lines: vec![Line::solid(ph(), 0.75), Line::solid(ph(), 1.0), Line::solid(ph(), 1.5)],
         effects: vec![
@@ -189,9 +189,9 @@ pub fn builtin_themes() -> Vec<Theme> {
     };
     vec![
         t(
-            "DeckCraft",
+            "SlideLogic",
             scheme(
-                "DeckCraft",
+                "SlideLogic",
                 ["000000", "FFFFFF", "1E2B3C", "EDEBE7", "2E6FD8", "F26B1D", "2EA36F", "8A5CD8", "D83F6B", "E3B21C", "2E6FD8", "7A5BA6"],
             ),
             "Inter",

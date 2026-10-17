@@ -34,7 +34,7 @@ struct Budget {
 
 #[derive(Debug, thiserror::Error)]
 pub enum FormatError {
-    #[error("not a DeckCraft file: {0}")]
+    #[error("not a SlideLogic file: {0}")]
     NotOurs(String),
     #[error("damaged file: {0}")]
     Damaged(String),
@@ -65,7 +65,7 @@ pub fn save(p: &Presentation) -> Result<Vec<u8>> {
         let m = Manifest {
             format: "deckcraft".into(),
             version: VERSION,
-            generator: format!("DeckCraft {}", env!("CARGO_PKG_VERSION")),
+            generator: format!("SlideLogic {}", env!("CARGO_PKG_VERSION")),
             presentation: p.clone(),
         };
         let json = serde_json::to_vec(&finite::Finite(&m)).map_err(|e| FormatError::Write(e.to_string()))?;
@@ -152,7 +152,7 @@ fn load_within(bytes: &[u8], budget: Budget) -> Result<(Presentation, Vec<String
         let name = format!("media/{}", item.id.0);
         let linked_only = item.link.is_some() && z.index_for_name(&name).is_none();
         if z.by_name(&name).is_ok_and(|f| f.size() > left) {
-            return Err(FormatError::Damaged("embedded media is larger than DeckCraft can open".into()));
+            return Err(FormatError::Damaged("embedded media is larger than SlideLogic can open".into()));
         }
         match read_entry_max(&mut z, &name, left.min(MAX_ENTRY)) {
             Ok(data) => {

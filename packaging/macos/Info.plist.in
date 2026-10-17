@@ -7,13 +7,13 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>DeckCraft</string>
+  <string>SlideLogic</string>
   <key>CFBundleName</key>
-  <string>DeckCraft</string>
+  <string>SlideLogic</string>
   <key>CFBundleExecutable</key>
-  <string>DeckCraft</string>
+  <string>SlideLogic</string>
   <key>CFBundleIdentifier</key>
-  <string>ai.storyteller.deckcraft</string>
+  <string>uk.co.aegeanlogic.slidelogic</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>
@@ -24,12 +24,12 @@
   <string>@SHORT_VERSION@</string>
   <key>CFBundleVersion</key>
   <string>@SHORT_VERSION@</string>
-  <key>DeckCraftVersion</key>
+  <key>SlideLogicVersion</key>
   <string>@VERSION@</string>
-  <key>DeckCraftBuildCommit</key>
+  <key>SlideLogicBuildCommit</key>
   <string>@BUILD_SHA@</string>
   <key>CFBundleIconFile</key>
-  <string>DeckCraft</string>
+  <string>SlideLogic</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.productivity</string>
   <!-- Must match MACOSX_DEPLOYMENT_TARGET in package.sh. Big Sur is the first release on
@@ -43,23 +43,23 @@
   <key>NSRequiresAquaSystemAppearance</key>
   <false/>
   <key>NSHumanReadableCopyright</key>
-  <string>Copyright © the DeckCraft authors. MIT OR Apache-2.0.</string>
+  <string>Copyright © Aegean Logic and the DeckCraft authors. MIT OR Apache-2.0.</string>
 
-  <!-- DeckCraft's own format: a zip of a JSON manifest plus media. -->
+  <!-- SlideLogic's own format: a zip of a JSON manifest plus media. -->
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>ai.storyteller.deckcraft.presentation</string>
+      <string>uk.co.aegeanlogic.slidelogic.presentation</string>
       <key>UTTypeDescription</key>
-      <string>DeckCraft Presentation</string>
+      <string>SlideLogic Presentation</string>
       <key>UTTypeConformsTo</key>
       <array>
         <string>public.data</string>
         <string>public.presentation</string>
       </array>
       <key>UTTypeIconFile</key>
-      <string>DeckCraft</string>
+      <string>SlideLogic</string>
       <key>UTTypeTagSpecification</key>
       <dict>
         <key>public.filename-extension</key>

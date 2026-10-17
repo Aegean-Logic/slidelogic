@@ -93,8 +93,8 @@ fn metadata_retains_values_and_omits_blank_fields() {
     let pdf = hayro_syntax::Pdf::new(bytes.clone()).unwrap();
     assert_eq!(pdf.metadata().title.as_deref(), Some(b"  Deck title  ".as_slice()));
     assert_eq!(pdf.metadata().author.as_deref(), Some(b"  Author  ".as_slice()));
-    assert_eq!(pdf.metadata().creator.as_deref(), Some(b"DeckCraft".as_slice()));
-    assert_eq!(pdf.metadata().producer.as_deref(), Some(b"DeckCraft".as_slice()));
+    assert_eq!(pdf.metadata().creator.as_deref(), Some(b"SlideLogic".as_slice()));
+    assert_eq!(pdf.metadata().producer.as_deref(), Some(b"SlideLogic".as_slice()));
     assert!(pdf.metadata().creation_date.is_none());
     p.props.author = " ".into();
     let bytes = export(&p, &PdfOptions { title: Some(" ".into()), ..opts(PageLayout::Slides) }).unwrap();
