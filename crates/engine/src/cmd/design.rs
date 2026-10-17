@@ -1510,7 +1510,7 @@ mod tests {
         match &s.ui_requests[0] {
             UiRequest::Dialog { id, params } => {
                 assert_eq!(id, "themeColors");
-                assert_eq!(params["name"], "DeckCraft");
+                assert_eq!(params["name"], "SlideLogic");
                 let colors = params["colors"].as_object().unwrap();
                 assert_eq!(colors.len(), 12);
                 assert_eq!(colors["accent1"].as_str().unwrap(), format!("#{}", original.get(SchemeSlot::Accent1).hex()));
@@ -1767,10 +1767,10 @@ mod browse_theme_tests {
         let mut s = crate::Session::with_new();
         let listed = s.execute("design.themes", &json!({})).unwrap();
         let names: Vec<String> = listed["effectSchemes"].as_array().unwrap().iter().filter_map(|v| v.as_str().map(str::to_string)).collect();
-        assert_eq!(names, ["DeckCraft", "Soft", "Crisp", "Lift", "Glow", "Plain"]);
+        assert_eq!(names, ["SlideLogic", "Soft", "Crisp", "Lift", "Glow", "Plain"]);
 
         let n = undo_len(&s);
-        s.execute("design.effects", &json!({"name": "DeckCraft"})).unwrap();
+        s.execute("design.effects", &json!({"name": "SlideLogic"})).unwrap();
         assert_eq!(undo_len(&s), n, "the scheme already on the theme is not an undo step");
         let err = s.execute("design.effects", &json!({"name": "Office"})).unwrap_err().to_string();
         assert!(err.contains("no effect scheme"), "{err}");

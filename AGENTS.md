@@ -1,5 +1,7 @@
 # AGENTS.md — rules for every agent and contributor
 
+**This is Aegean Logic's fork of DeckCraft, shipped as SlideLogic.** Everything users see says SlideLogic and carries Aegean Logic branding (`docs/brand/`). Internal identifiers keep the upstream name on purpose, to keep upstream merges cheap: crate and folder names (`deckcraft-*`), the binaries, the `.deckcraft` file format and its MIME type, the preferences folder, `DECKCRAFT_*` environment variables, the web bridge's `deckcraft:*` messages and the Nextcloud app id. Upstream (`storytold/deckcraft`) is the `upstream` remote; the fork is pushed to `origin` (`Aegean-Logic/slidelogic`) only when the user asks, never to `upstream`. Fork work: the web host bridge (`packaging/web/README.md`) and the Nextcloud app (`../deckcraft-nextcloud`).
+
 DeckCraft is a clean-room, open-source, pure-Rust presentation application targeting Microsoft
 PowerPoint parity — and superiority (speed, openness, agent control). It runs natively on macOS,
 Windows, Linux and FreeBSD, and on the web via WASM. Siblings with the same conventions:
@@ -50,8 +52,8 @@ Ubuntu-Font-1.0, Bitstream-Vera); Creative Commons (CC0-1.0, CC-BY-4.0, CC-BY-SA
 domain; or contributor-original (created by a contributor who licenses it under
 `MIT OR Apache-2.0`).
 
-One narrow exception: the ArtCraft name, wordmark and logos in `docs/brand/` are trademarks of the
-ArtCraft Team (not open source, terms in `docs/brand/LICENSE-brand.txt`), used only unmodified to
+One narrow exception: the Aegean Logic name, wordmark and logos in `docs/brand/` are trademarks of
+Aegean Logic (not open source, terms in `docs/brand/LICENSE-brand.txt`), used only unmodified to
 identify the project.
 
 Forbidden: system fonts that are not openly licensed, vendor emoji artwork, stock photos, "free

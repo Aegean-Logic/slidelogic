@@ -1212,7 +1212,7 @@ fn font_add(_s: &mut Session, p: &Value) -> Result<Value> {
     }
     let faces = deckcraft_fonts::FontDb::global().add_font(data);
     if faces == 0 {
-        return Err(bad("font.add", "not a font DeckCraft can read (or already added)"));
+        return Err(bad("font.add", "not a font SlideLogic can read (or already added)"));
     }
     Ok(json!({"faces": faces}))
 }

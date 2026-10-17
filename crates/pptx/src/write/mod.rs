@@ -1252,7 +1252,7 @@ fn app_xml(p: &Presentation) -> Vec<u8> {
             .a("xmlns", "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties")
             .a("xmlns:vt", "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"),
     );
-    w.elt("Application", "DeckCraft");
+    w.elt("Application", "SlideLogic");
     w.elt("Slides", &p.slides.len().to_string());
     w.elt("Notes", &p.slides.iter().filter(|s| !s.notes.is_empty()).count().to_string());
     w.elt("HiddenSlides", &p.slides.iter().filter(|s| s.hidden).count().to_string());

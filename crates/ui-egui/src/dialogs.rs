@@ -47,7 +47,7 @@ fn title(id: &str) -> &'static str {
         "paragraph" => "Paragraph",
         "tabs" => "Tabs",
         "font" => "Font",
-        "about" => "About DeckCraft",
+        "about" => "About SlideLogic",
         "preferences" => "Preferences",
         "autocorrect" => "AutoCorrect",
         "gridOptions" => "Grid Options",
@@ -68,10 +68,10 @@ fn title(id: &str) -> &'static str {
         "smartart" => "Choose a SmartArt Graphic",
         "bullets" => "Bullets and Numbering",
         "action" => "Action Settings",
-        "quit" => "DeckCraft",
+        "quit" => "SlideLogic",
         "themeColors" => "Create New Theme Colors",
         "themeFonts" => "Create New Theme Fonts",
-        _ => "DeckCraft",
+        _ => "SlideLogic",
     }
 }
 
@@ -274,7 +274,7 @@ fn album_choice(ui: &mut Ui, d: &mut Dialog, id: &str, key: &str, default: &str,
     opened.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, label));
 }
 
-const ALBUM_THEMES: &[&str] = &["DeckCraft", "Harbor", "Ember", "Meadow", "Nocturne", "Paper", "Coral Reef", "Slate"];
+const ALBUM_THEMES: &[&str] = &["SlideLogic", "Harbor", "Ember", "Meadow", "Nocturne", "Paper", "Coral Reef", "Slate"];
 
 fn current_theme(app: &SlideApp) -> String {
     app.session
@@ -282,7 +282,7 @@ fn current_theme(app: &SlideApp) -> String {
         .and_then(|d| d.doc.masters.first())
         .map(|m| m.theme.name.clone())
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "DeckCraft".into())
+        .unwrap_or_else(|| "SlideLogic".into())
 }
 
 fn album_json_id(v: &Value) -> Option<u64> {
@@ -465,7 +465,7 @@ fn photo_album_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         check(ui, d, "Captions under pictures", "captions", false);
         check(ui, d, "ALL pictures black and white", "grayscale", false);
         ui.label("Album theme");
-        album_choice(ui, d, "album_theme", "theme", "DeckCraft", &ALBUM_THEMES.iter().map(|n| (*n, *n)).collect::<Vec<_>>());
+        album_choice(ui, d, "album_theme", "theme", "SlideLogic", &ALBUM_THEMES.iter().map(|n| (*n, *n)).collect::<Vec<_>>());
     });
     let captions = d.fields.get("captions").is_some_and(|v| v == "1");
     let grayscale = d.fields.get("grayscale").is_some_and(|v| v == "1");
@@ -482,7 +482,7 @@ fn photo_album_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         }
         let layout = d.get("layout", "1");
         let frame = d.get("frame", "rect");
-        let theme = d.get("theme", "DeckCraft");
+        let theme = d.get("theme", "SlideLogic");
         let theme_was = d.fields.get("themeWas").cloned().unwrap_or_default();
         let mut payload = json!({"pictures": list, "layout": layout, "frame": frame, "captions": captions, "grayscale": grayscale});
         if theme != theme_was
@@ -2607,17 +2607,21 @@ pub fn about(_app: &mut SlideApp, ui: &mut Ui) {
     ui.vertical_centered(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(64.0, 64.0), Sense::hover());
         paint_logo(ui.painter(), r);
-        ui.label(egui::RichText::new("DeckCraft").font(theme::bold(22.0)));
+        ui.label(egui::RichText::new("SlideLogic").font(theme::bold(22.0)));
+        ui.label(egui::RichText::new("by Aegean Logic").font(theme::bold(14.0)));
         ui.label(egui::RichText::new(version_line()).color(t.text_dim));
         ui.add_space(6.0);
-        ui.label("Presentations and slide shows, rebuilt from scratch in pure Rust.");
+        ui.label("Presentations and slide shows, rebuilt from scratch in pure Rust, based on DeckCraft.");
         ui.label("An open-source, clean-room project. Not affiliated with Microsoft.");
         ui.add_space(6.0);
-        ui.hyperlink_to("Join our community on Discord", deckcraft_engine::links::DISCORD);
-        ui.hyperlink_to("getartcraft.com/apps/deckcraft", deckcraft_engine::links::APP_PAGE);
+        ui.hyperlink_to("www.aegeanlogic.co.uk", deckcraft_engine::links::WEBSITE);
         ui.hyperlink_to("Source on GitHub", deckcraft_engine::links::GITHUB);
         ui.add_space(6.0);
-        ui.label(egui::RichText::new("MIT OR Apache-2.0 · © 2026 ArtCraft Team and the DeckCraft contributors").size(11.0).color(t.text_faint));
+        ui.label(
+            egui::RichText::new("MIT OR Apache-2.0 · © 2026 Aegean Logic. Based on DeckCraft, © 2026 ArtCraft Team and the DeckCraft contributors")
+                .size(11.0)
+                .color(t.text_faint),
+        );
     });
 }
 
@@ -2636,20 +2640,43 @@ pub fn version_line() -> String {
     s
 }
 
-/// DeckCraft's mark, drawn in code: a slide card with a play triangle in our orange.
+/// SlideLogic's mark, drawn in code: the app icon's "Banded slide" (`assets/app-icon/deckcraft.svg`),
+/// a white slide with an ink header band and frame, a sea S trace ending in the aqua node, and
+/// three slide dots, on a marble tile. Coordinates are the icon's 512 grid.
 pub fn paint_logo(p: &egui::Painter, r: Rect) {
-    let orange = Color32::from_rgb(0xF2, 0x6B, 0x1D);
-    let deep = Color32::from_rgb(0xC2, 0x4E, 0x14);
-    let card = r.shrink(r.width() * 0.08);
-    p.rect_filled(card.translate(vec2(r.width() * 0.04, r.width() * 0.05)), CornerRadius::same((r.width() * 0.14) as u8), deep);
-    p.rect_filled(card, CornerRadius::same((r.width() * 0.14) as u8), orange);
-    let c = card.center();
-    let s = card.width() * 0.22;
-    p.add(egui::Shape::convex_polygon(
-        vec![pos2(c.x - s * 0.7, c.y - s), pos2(c.x + s, c.y), pos2(c.x - s * 0.7, c.y + s)],
-        Color32::WHITE,
-        Stroke::NONE,
-    ));
+    let ink = Color32::from_rgb(0x0A, 0x2A, 0x3B);
+    let sea = Color32::from_rgb(0x12, 0x71, 0x8C);
+    let aqua = Color32::from_rgb(0x2F, 0xC6, 0xC0);
+    let marble = Color32::from_rgb(0xF4, 0xF2, 0xEC);
+    let dot = Color32::from_rgb(0xCE, 0xD4, 0xD8);
+    let k = r.width().min(r.height()) / 512.0;
+    let at = |x: f32, y: f32| pos2(r.min.x + x * k, r.min.y + y * k);
+    let radius = |v: f32| (v * k).clamp(0.0, 255.0) as u8;
+    p.rect_filled(Rect::from_min_max(at(0.0, 0.0), at(512.0, 512.0)), CornerRadius::same(radius(112.0)), marble);
+    let slide = Rect::from_min_max(at(56.0, 96.0), at(456.0, 360.0));
+    p.rect_filled(slide, CornerRadius::same(radius(28.0)), Color32::WHITE);
+    let band = CornerRadius { nw: radius(28.0), ne: radius(28.0), sw: 0, se: 0 };
+    p.rect_filled(Rect::from_min_max(at(56.0, 96.0), at(456.0, 152.0)), band, ink);
+    p.rect_stroke(slide, CornerRadius::same(radius(28.0)), Stroke::new(16.0 * k, ink), egui::StrokeKind::Middle);
+    // The S: two elliptical arcs, the top bowl turning anticlockwise from the node, the bottom
+    // one clockwise (the SVG's arcs, by centre and angle).
+    let arc = |cx: f32, cy: f32, rx: f32, ry: f32, from: f32, to: f32| {
+        (0..=16).map(move |i| {
+            let a = (from + (to - from) * i as f32 / 16.0).to_radians();
+            at(cx + rx * a.cos(), cy + ry * a.sin())
+        })
+    };
+    let trace: Vec<_> = arc(256.0, 224.6, 42.2, 33.4, -40.0, -270.0).chain(arc(256.0, 295.0, 47.5, 37.0, -90.0, 140.0).skip(1)).collect();
+    let width = 30.0 * k;
+    if let (Some(first), Some(last)) = (trace.first().copied(), trace.last().copied()) {
+        p.add(egui::Shape::line(trace, Stroke::new(width, sea)));
+        p.circle_filled(first, width / 2.0, sea);
+        p.circle_filled(last, width / 2.0, sea);
+    }
+    p.circle(at(288.4, 203.1), 28.0 * k, aqua, Stroke::new(12.0 * k, Color32::WHITE));
+    for (x, c) in [(212.0, dot), (256.0, ink), (300.0, dot)] {
+        p.circle_filled(at(x, 412.0), 12.0 * k, c);
+    }
 }
 
 /// The selection's proofing language and whether it's marked Do Not Check Spelling: the run at
@@ -3217,7 +3244,7 @@ fn find_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
                 p["with"] = json!(d.get("with", ""));
                 let msg = match app.session.execute("text.replace", &p) {
                     Ok(v) => format!("Replaced {} occurrence(s).", v.get("replaced").and_then(Value::as_u64).unwrap_or(0)),
-                    Err(_) => format!("DeckCraft can't find “{text}”."),
+                    Err(_) => format!("SlideLogic can't find “{text}”."),
                 };
                 d.fields.insert("status".into(), msg);
                 d.fields.remove("cur");
@@ -3232,7 +3259,7 @@ fn find_dialog(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
     if find_next {
         let list = app.session.execute("text.find", &q).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
         if list.is_empty() {
-            d.fields.insert("status".into(), format!("DeckCraft can't find “{text}”."));
+            d.fields.insert("status".into(), format!("SlideLogic can't find “{text}”."));
             d.fields.remove("cur");
         } else {
             let n = d.get("next", "0").parse::<usize>().unwrap_or(0) % list.len();

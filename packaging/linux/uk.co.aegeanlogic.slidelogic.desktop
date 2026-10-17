@@ -1,14 +1,14 @@
 [Desktop Entry]
 Type=Application
-Name=DeckCraft
+Name=SlideLogic
 GenericName=Presentation
 Comment=Create and present slide decks
 Exec=deckcraft %F
 TryExec=deckcraft
-Icon=ai.storyteller.deckcraft
+Icon=uk.co.aegeanlogic.slidelogic
 Terminal=false
 StartupNotify=true
-StartupWMClass=ai.storyteller.deckcraft
+StartupWMClass=uk.co.aegeanlogic.slidelogic
 Categories=Office;Presentation;
 MimeType=application/x-deckcraft;application/vnd.openxmlformats-officedocument.presentationml.presentation;application/vnd.openxmlformats-officedocument.presentationml.template;application/vnd.openxmlformats-officedocument.presentationml.slideshow;
 Keywords=presentation;slides;slide show;deck;pptx;keynote;powerpoint;

@@ -1,13 +1,13 @@
-# DeckCraft PDF export
+# SlideLogic PDF export
 
-DeckCraft uses `craft-pdf` for writer construction, metadata, fallible font preparation and
+SlideLogic uses `craft-pdf` for writer construction, metadata, fallible font preparation and
 final serialization. Slide rasterization, the selectable text overlay, font discovery and
 shaping, hyperlinks, bookmarks, notes and handout layout remain app-owned. The existing
 renderer also resolves and rasterizes WMF/EMF pictures before export.
 
 Only the shared `write` feature is enabled, with default features disabled. Krilla retains
 its raster-image and simple-text features, including notes/footer shaping. PDF embedding is
-disabled: DeckCraft does not use it. The production exporter has no Hayro parser, interpreter,
+disabled: SlideLogic does not use it. The production exporter has no Hayro parser, interpreter,
 image-decoder, fallback-font or CMap dependencies. Tests use `hayro-syntax` 0.7.2 directly,
 with only `std` enabled, to inspect the generated PDFs.
 

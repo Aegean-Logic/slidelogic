@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and package DeckCraft for FreeBSD:
+# Build and package SlideLogic for FreeBSD:
 #
 #   $DIST/deckcraft-<version>-freebsd-<arch>.tar.gz   bin/, share/ (desktop entry, icons, AppStream)
 #
@@ -12,7 +12,7 @@ set -euo pipefail
 # shellcheck source=../common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 LINUX="$ROOT/packaging/linux"
-APP_ID=ai.storyteller.deckcraft
+APP_ID=uk.co.aegeanlogic.slidelogic
 
 if [ "${1:-}" != "--skip-build" ]; then
   (cd "$ROOT" && cargo build --release --locked -p deckcraft -p deckcraft-cli)

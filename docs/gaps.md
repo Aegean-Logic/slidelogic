@@ -1,4 +1,4 @@
-# Where DeckCraft falls short of PowerPoint
+# Where SlideLogic falls short of PowerPoint
 
 > **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-14 · **Change:** major (community PR wave 2026-10-14: soak tests, PPTX corpus, comment threads (#70), embedded fonts, SmartArt Text Pane, Animation Pane timeline, Hunspell spelling, thesaurus, AutoCorrect, 14 new dialogs, pen pressure and trackpad gestures; duplicated entries and headers folded; previous: minor, 3-D bevel, camera and face lighting rendered) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
 
@@ -42,7 +42,7 @@ revision history.
 
 ### Startup crashes on some Windows GPUs (#40, #59)
 - **Evidence:** #59 (Intel UHD, access violation in `igvk64.dll` during Vulkan enumeration), #40
-  (WordCraft, GridCraft and DeckCraft all fail on one Windows 11 PC). The DX12 default (#16) fixed
+  (WordCraft, GridCraft and SlideLogic all fail on one Windows 11 PC). The DX12 default (#16) fixed
   AMD's `atio6axx.dll` crash only.
 - **Impact:** the app never opens for those users.
 - **Estimate:** 4–8 h (backend probing outside the process or a safe-mode fallback, a software
@@ -117,7 +117,7 @@ Detail in [file-format-parity.md](file-format-parity.md).
 
 ### No legacy `.ppt`/`.pot`/`.pps` import
 - **Evidence:** PowerPoint for Mac still opens and saves the 97–2003 binary formats
-  (`CFBundleDocumentTypes`); DeckCraft doesn't read them.
+  (`CFBundleDocumentTypes`); SlideLogic doesn't read them.
 - **Impact:** archives of older decks don't open.
 - **Estimate:** 20–35 h (import only, from the public [MS-PPT] spec). Owner decision whether it's
   worth it.
@@ -172,7 +172,7 @@ Detail in [file-format-parity.md](file-format-parity.md).
   have their own layouts, histograms and Paretos bin their data (count, width or Scott's rule),
   and box & whisker charts use exclusive or inclusive quartiles with 1.5 IQR whiskers. Region maps are kept
   (their cached geography too, also through edits) and drawn as value-coloured tiles with a
-  colour scale, since DeckCraft ships no map boundaries. Radar charts are drawn polar (filled
+  colour scale, since SlideLogic ships no map boundaries. Radar charts are drawn polar (filled
   or lines), stock charts as high-low lines with close dashes or up/down bars and saved as
   `c:stockChart`, and combo charts start as columns with a line. Trendlines round-trip
   (`corpus_charts.rs`) and are drawn: linear, exponential, logarithmic, polynomial, power and
@@ -191,11 +191,11 @@ Detail in [file-format-parity.md](file-format-parity.md).
   cached drawing; `crates/pptx/src/dgm.rs`), and PowerPoint diagrams read their outline from the
   data model, so they get the Text Pane too. 15 layouts (bullet and block lists, five process, two cycle and
   a radial, hierarchy, two pyramids, two matrices), four SmartArt Styles and Change Colors
-  (colourful or one accent). Still missing: DeckCraft's own layout definitions are simple (not yet
+  (colourful or one accent). Still missing: SlideLogic's own layout definitions are simple (not yet
   checked in PowerPoint itself); PowerPoint has ~200 layouts, picture layouts and 3-D styles; editing an
-  imported diagram's outline redraws it with DeckCraft's layout; a diagram with no cached drawing
+  imported diagram's outline redraws it with SlideLogic's layout; a diagram with no cached drawing
   isn't drawn.
-- **Impact:** a PowerPoint diagram edited in DeckCraft changes look.
+- **Impact:** a PowerPoint diagram edited in SlideLogic changes look.
 - **Estimate:** 6–10 h.
 
 ### Animation Pane, effect count and preview
@@ -214,9 +214,9 @@ of the effect gallery. Detail in [animation-parity.md](animation-parity.md). 8�
   not read as triggers; click boxes are the shape's bounding box (a hexagon's corners count) and do
   not follow a shape that a motion path has moved; the PPTX writer turns every "on click" after the
   first effect of a trigger into "after previous", so a trigger with several click steps saved from
-  DeckCraft plays all of them at once.
+  SlideLogic plays all of them at once.
 - **Impact:** games built around sound effects on buttons, or around a button that counts up with
-  repeated clicks, lose that part when they are saved from DeckCraft or played in it.
+  repeated clicks, lose that part when they are saved from SlideLogic or played in it.
 - **Estimate:** 4–8 h.
 
 ### Notes and Handout masters
@@ -254,7 +254,7 @@ of the effect gallery. Detail in [animation-parity.md](animation-parity.md). 8�
   with a right-click menu; repeated words (`the the`) are flagged with Delete Repeated Word;
   Review › Language marks the selection's proofing language or Do Not Check Spelling
   (`lang`/`noProof` round-trip in PPTX). No grammar checking. The web build checks on the UI
-  thread a few milliseconds per frame. No dictionaries ship with DeckCraft, so without one
+  thread a few milliseconds per frame. No dictionaries ship with SlideLogic, so without one
   installed (always on Windows and the web) only a short list of common misspellings is found.
   `review.thesaurus` looks up the selected word (checklist row partial). AutoCorrect has
   PowerPoint's options (two initial capitals, sentence and day capitals, caps lock, fractions, an

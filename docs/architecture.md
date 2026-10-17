@@ -1,8 +1,8 @@
-# DeckCraft architecture
+# SlideLogic architecture
 
 > **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-14 · **Change:** minor (community PR wave 2026-10-14: 320 engine commands, 41 dialogs, the `metafile` crate, 1,641 tests; duplicated L2/L5/L6 rows and headers folded; previous: minor, transition frames) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
 
-How DeckCraft is built today. The binding rules (layering, everything is a command, thin UI, never
+How SlideLogic is built today. The binding rules (layering, everything is a command, thin UI, never
 break wasm, never crash) are in [AGENTS.md](../AGENTS.md) §3–§5; this document describes what
 exists. 202k lines of Rust in 24 crates, 3 apps and `xtask`; 1,641 `#[test]` functions
 (`cargo xtask stats` counts them per crate).
@@ -32,7 +32,7 @@ FilmCraft.
 A `Presentation` holds a theme set, slide masters with their layouts, slides, sections, custom
 shows, comments, media and document properties. Shapes are a tree (`ShapeKind`: preset or custom
 geometry, picture, table, chart, group, connector, ink, media, SmartArt-as-group, and `Opaque` for
-anything read from PPTX that DeckCraft doesn't model: its XML is kept and written back). Text
+anything read from PPTX that SlideLogic doesn't model: its XML is kept and written back). Text
 bodies hold paragraphs of runs with DrawingML properties; formatting resolves slide → layout →
 master → theme at render time. Transitions live on slides; animations are the flat ordered list the
 Animation Pane shows, rebuilt into PowerPoint's timing tree on save.

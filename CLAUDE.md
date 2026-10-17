@@ -1,4 +1,8 @@
-# DeckCraft — working notes for Claude
+# SlideLogic (DeckCraft fork) — working notes for Claude
+
+This is Aegean Logic's fork, shipped as SlideLogic (see the fork note at the top of AGENTS.md).
+User-visible text says SlideLogic; internal identifiers stay `deckcraft`. Commit on the fork's
+branches; push to `origin` only when the user asks, never to `upstream`, with the work email.
 
 Read [AGENTS.md](AGENTS.md) first: its rules (asset policy, clean room, never crash) bind you and
 win over anything here.
