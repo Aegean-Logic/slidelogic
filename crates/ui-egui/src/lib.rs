@@ -55,6 +55,17 @@ pub type PickFn = Box<dyn FnMut(&str) -> Option<String>>;
 /// not applied to whichever document happens to be active.
 pub type OpenAsyncFn = Box<dyn FnMut(&str, u64)>;
 pub type DownloadFn = Box<dyn FnMut(&str, &[u8])>;
+/// Save hands the active presentation to the host's own storage ([`Services::save_to_host`]).
+pub type HostSaveFn = Box<dyn FnMut(&deckcraft_engine::DocState) -> Result<HostSave, String>>;
+
+/// What [`Services::save_to_host`] did with the presentation it was given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostSave {
+    /// Stored: the presentation as it was handed over counts as saved.
+    Saved,
+    /// Handed over; the host marks it saved (`DocState::saved_doc`) once it confirms.
+    Pending,
+}
 
 /// A file the host finished reading for the request `id` from [`SlideApp::begin_external_file`].
 #[derive(Clone, Debug)]
@@ -211,6 +222,10 @@ pub struct Services {
     pub open_async: Option<OpenAsyncFn>,
     /// Hand bytes to the user as a named file (browser download).
     pub download: Option<DownloadFn>,
+    /// Save stores the presentation through the host instead of a file path or a download (the
+    /// web app framed by a page that has its own storage, `?host=parent`). An error is shown and
+    /// leaves the presentation unsaved.
+    pub save_to_host: Option<HostSaveFn>,
     pub inbox: Option<Inbox>,
     /// Image on the system clipboard (PNG bytes), when the host can read one.
     pub clipboard_image: Option<Box<dyn FnMut() -> Option<Vec<u8>>>>,
@@ -1294,6 +1309,21 @@ impl SlideApp {
     }
 
     pub fn save(&mut self) {
+        if let Some(hook) = self.services.save_to_host.as_mut() {
+            let Some(st) = self.session.active() else { return };
+            let handed = st.doc.clone();
+            match hook(st) {
+                Ok(HostSave::Saved) => {
+                    if let Some(st) = self.session.active_mut() {
+                        st.saved_doc = handed;
+                    }
+                    self.set_status("Saved");
+                }
+                Ok(HostSave::Pending) => self.set_status("Saving…"),
+                Err(e) => self.notify(format!("Couldn't save: {e}")),
+            }
+            return;
+        }
         if self.session.active().and_then(|d| d.path.clone()).is_some() {
             match self.session.execute("file.save", &json!({})) {
                 Ok(_) => self.set_status("Saved"),
@@ -3355,5 +3385,39 @@ mod tests {
         let after = harness.state().ui.ui_scale;
         assert!(after > before + 0.3, "letting go applies the size dragged to: {before} -> {after}");
         assert!(harness.state().dialog.is_some(), "Preferences stays open");
+    }
+
+    /// With `save_to_host` (the web app in a page with its own storage), Save hands the
+    /// presentation to the host: stored at once it counts as saved, still pending it stays
+    /// unsaved, and a refusal is shown with the presentation unsaved.
+    #[test]
+    fn save_goes_to_the_host_when_it_has_storage() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let handed: Rc<RefCell<Vec<String>>> = Rc::default();
+        let answer = Rc::new(RefCell::new(Ok(HostSave::Saved)));
+        let mut services = Services::default();
+        let (seen, reply) = (handed.clone(), answer.clone());
+        services.save_to_host = Some(Box::new(move |st: &deckcraft_engine::DocState| {
+            seen.borrow_mut().push(st.title());
+            reply.borrow().clone()
+        }));
+        let mut app = SlideApp::new(Session::with_new(), services);
+        app.session.execute("slide.new", &json!({})).unwrap();
+        assert!(app.session.active().unwrap().is_dirty());
+        app.save();
+        assert_eq!(handed.borrow().len(), 1, "the host got the presentation");
+        assert!(!app.session.active().unwrap().is_dirty(), "stored at once: saved");
+
+        *answer.borrow_mut() = Ok(HostSave::Pending);
+        app.session.execute("slide.new", &json!({})).unwrap();
+        app.save();
+        assert_eq!(handed.borrow().len(), 2);
+        assert!(app.session.active().unwrap().is_dirty(), "unsaved until the host confirms");
+
+        *answer.borrow_mut() = Err("the disk is full".into());
+        app.save();
+        assert!(app.session.active().unwrap().is_dirty(), "a refused save leaves it unsaved");
+        assert!(app.toast.as_ref().is_some_and(|t| t.text.contains("the disk is full")), "and says why");
     }
 }

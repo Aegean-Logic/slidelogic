@@ -1,4 +1,4 @@
-//! DeckCraft in the browser.
+//! SlideLogic (DeckCraft) in the browser.
 //!
 //! Runs the same [`deckcraft_ui_egui::SlideApp`] as the desktop app through eframe's web
 //! runner (wgpu: WebGPU where available, WebGL2 otherwise). Build with `trunk build --release`
@@ -14,9 +14,17 @@
 //! - preferences are not persisted.
 //!
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?blank` starts with an
-//! empty presentation instead of the sample deck; `?show` starts the slide show.
+//! empty presentation instead of the sample deck; `?show` starts the slide show. `?host=parent`
+//! (inside an `<iframe>`) talks to a same-origin parent page instead: it sends the presentation to
+//! open and stores what SlideLogic saves (`host`), `&author=` names the user for new comments, and
+//! `&ack=1` has the parent confirm each save (`acks`).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod acks;
+#[cfg(target_arch = "wasm32")]
+mod host;
 
 #[cfg(target_arch = "wasm32")]
 mod web;
