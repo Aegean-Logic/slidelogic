@@ -8,7 +8,7 @@
 //! socket may sit idle or blocked on a write.
 
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
@@ -170,6 +170,32 @@ fn is_http_request_line(text: &str) -> bool {
         || text.rsplit_once(' ').is_some_and(|(_, version)| version.starts_with("HTTP/"))
 }
 
+/// The most input [`close_after_reply`] discards, and for how long.
+const DRAIN_BYTES: usize = 64 * 1024;
+const DRAIN_TIME: Duration = Duration::from_millis(200);
+
+/// Close a connection after its error reply without losing the reply. Closing a socket that still
+/// has unread input makes the system reset the connection (always on Windows), and the peer can
+/// then lose the reply before reading it. So: end our side first (the peer reads the reply, then
+/// end of stream), and discard what the peer still sends, a bounded amount for a bounded time.
+/// Nothing read here is dispatched.
+fn close_after_reply(out: &TcpStream, reader: &mut BufReader<TcpStream>) {
+    let _ = (&*out).flush();
+    let _ = out.shutdown(Shutdown::Write);
+    if reader.get_ref().set_read_timeout(Some(DRAIN_TIME)).is_err() {
+        return;
+    }
+    let deadline = std::time::Instant::now() + DRAIN_TIME;
+    let mut sink = [0u8; 4096];
+    let mut left = DRAIN_BYTES;
+    while left > 0 && std::time::Instant::now() < deadline {
+        match reader.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => left = left.saturating_sub(n),
+        }
+    }
+}
+
 fn serve(stream: TcpStream, tx: &SyncSender<ControlRequest>, ctx: &egui::Context, limits: Limits) {
     if stream.set_read_timeout(Some(limits.idle_timeout)).is_err() || stream.set_write_timeout(Some(limits.write_timeout)).is_err() {
         return;
@@ -182,6 +208,7 @@ fn serve(stream: TcpStream, tx: &SyncSender<ControlRequest>, ctx: &egui::Context
             Line::Text(t) => t,
             Line::TooLong => {
                 let _ = writeln!(out, "{}", json!({"ok": false, "error": format!("request line longer than {} bytes", limits.max_line)}));
+                close_after_reply(&out, &mut reader);
                 break;
             }
             Line::Closed => break,
@@ -191,6 +218,7 @@ fn serve(stream: TcpStream, tx: &SyncSender<ControlRequest>, ctx: &egui::Context
             Parsed::Reject(e) => {
                 // The connection closes either way; a peer that can't read the reason loses nothing.
                 let _ = writeln!(out, "{}", json!({"ok": false, "error": e}));
+                close_after_reply(&out, &mut reader);
                 break;
             }
             Parsed::Request { id, method, params } => {
