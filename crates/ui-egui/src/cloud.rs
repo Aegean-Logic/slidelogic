@@ -1,7 +1,8 @@
 //! The host's cloud (Nextcloud), as OneDrive is PowerPoint's: the File view's Nextcloud places
-//! ([`crate::cloud_files`]) talk to it through [`Cloud`]. The host does the talking (the desktop
-//! app over HTTP); the UI only sends requests and reads the answers. Ported from WordLogic's
-//! `crates/ui-egui/src/cloud.rs` (GridLogic's definitions), without the Share dialog's operations.
+//! ([`crate::cloud_files`]) and the Share dialog ([`crate::share`], which lists its operations) talk
+//! to it through [`Cloud`]. The host does the talking (the desktop app over HTTP, the browser page
+//! through the host bridge); the UI only sends requests and reads the answers. Ported from
+//! WordLogic's `crates/ui-egui/src/cloud.rs` (GridLogic's definitions).
 
 use std::sync::{Arc, Mutex};
 
@@ -33,6 +34,11 @@ pub struct Cloud {
 }
 
 impl Cloud {
+    /// A cloud for sharing only (the browser's: the page owns the files).
+    pub fn sharing(request: Box<dyn Fn(u64, &str, Json)>, inbox: CloudInbox) -> Cloud {
+        Cloud { request, inbox, files: false, location: None }
+    }
+
     /// The cloud file `local` is the copy of, if any.
     pub fn location_of(&self, local: &str) -> Option<String> {
         self.location.as_ref().and_then(|f| f(local))

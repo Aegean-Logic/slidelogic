@@ -81,7 +81,7 @@ pub fn title_bar(app: &mut SlideApp, ui: &mut Ui) {
         // Right side.
         let mut right = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(Rect::from_min_max(pos2(rect.max.x - 320.0, rect.min.y), pos2(rect.max.x - 10.0, rect.max.y)))
+                .max_rect(Rect::from_min_max(pos2(rect.max.x - 440.0, rect.min.y), pos2(rect.max.x - 10.0, rect.max.y)))
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
         right.spacing_mut().item_spacing.x = 6.0;
@@ -97,6 +97,52 @@ pub fn title_bar(app: &mut SlideApp, ui: &mut Ui) {
         if share.clicked() && has_doc {
             let from = app.session.active().map(|d| d.selection.slide).unwrap_or(0);
             app.start_show(from, false);
+        }
+        // Share, as PowerPoint's does through OneDrive: with a cloud (Nextcloud), people or a link
+        // (the Share dialog, `share`); without one, or from its right-click menu, a copy to send.
+        if has_doc {
+            let r = right.add(
+                egui::Button::new(egui::RichText::new("        Share").font(theme::font(13.0)))
+                    .corner_radius(control_h / 2.0)
+                    .min_size(vec2(84.0, control_h)),
+            );
+            icons::paint(
+                right.painter(),
+                Rect::from_center_size(pos2(r.rect.min.x + 18.0, r.rect.center().y), vec2(16.0, 16.0)),
+                Icon::Share,
+                t.text,
+                false,
+            );
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Share"));
+            let cloud = app.services.cloud.is_some();
+            let r = r.on_hover_text(if cloud {
+                "Share with people or by link (right-click: export a copy)"
+            } else {
+                "Export a copy to share (PDF, PowerPoint)"
+            });
+            if r.clicked() {
+                if cloud {
+                    let _ = app.run("app.share", json!({}));
+                } else {
+                    app.open_backstage(crate::backstage::Page::Export);
+                }
+            }
+            r.context_menu(|ui| {
+                if ui.button("Export a copy…").clicked() {
+                    app.open_backstage(crate::backstage::Page::Export);
+                    ui.close();
+                }
+            });
+        }
+        // In the browser: carry on in SlideLogic on this computer, as PowerPoint for the web's
+        // Open in Desktop App does (together with everyone still editing here).
+        if has_doc
+            && app.services.open_in_desktop.is_some()
+            && icon_toggle(&mut right, Icon::NewWindow, "Open in Desktop App: edit this presentation in SlideLogic on this computer", true, false)
+                .clicked()
+            && let Some(open) = &app.services.open_in_desktop
+        {
+            open();
         }
         if icon_toggle(&mut right, Icon::CommentsBubble, "Comments", has_doc, app.ui.pane.as_deref() == Some("comments")).clicked() {
             let _ = app.run("view.pane", json!({"pane": "comments", "toggle": true}));
