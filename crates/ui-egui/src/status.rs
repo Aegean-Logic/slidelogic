@@ -27,11 +27,7 @@ pub fn status_bar(app: &mut SlideApp, ui: &mut Ui) {
         if ui.interact(lr.expand(3.0), ui.id().with("status_lang"), Sense::click()).on_hover_text("Language").clicked() {
             app.dialog = Some(crate::dialogs::Dialog::new("language"));
         }
-        // Transient status message.
-        if let Some(msg) = app.fresh_status() {
-            p.text(pos2(rect.min.x + 290.0, rect.center().y), Align2::LEFT_CENTER, &msg, theme::font(12.0), t.accent);
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-        }
+        let msg_left = (rect.min.x + 290.0).max(lr.max.x + 16.0);
         let mut right = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_max(pos2(rect.max.x - 560.0, rect.min.y), pos2(rect.max.x - 8.0, rect.max.y)))
@@ -83,6 +79,21 @@ pub fn status_bar(app: &mut SlideApp, ui: &mut Ui) {
         let n_on = app.ui.notes;
         if labeled(&mut right, Icon::NotesSmall, "Notes", n_on).clicked() {
             app.ui.notes = !n_on;
+        }
+        // Transient status message, between the language and the controls on the right: cut
+        // short with "…" where the window is narrow (in full on hover), never under the controls.
+        if let Some(msg) = app.fresh_status() {
+            let room = Rect::from_min_max(pos2(msg_left, rect.min.y), pos2(right.min_rect().left() - 8.0, rect.max.y));
+            if room.width() > 24.0 {
+                let mut job = egui::text::LayoutJob::simple_singleline(msg.clone(), theme::font(12.0), t.accent);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(room.width());
+                let galley = ui.painter().layout_job(job);
+                let at = pos2(room.min.x, rect.center().y - galley.size().y / 2.0);
+                let shown = Rect::from_min_size(at, galley.size());
+                ui.painter().galley(at, galley, t.accent);
+                ui.interact(shown, ui.id().with("status_msg"), Sense::hover()).on_hover_text(msg);
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
         }
         let _ = Stroke::NONE;
     });
