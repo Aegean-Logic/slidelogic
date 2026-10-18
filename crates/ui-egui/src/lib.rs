@@ -9,6 +9,8 @@
 pub mod animtimeline;
 pub mod backstage;
 pub mod canvas;
+pub mod cloud;
+pub mod cloud_files;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
@@ -236,6 +238,9 @@ pub struct Services {
     pub clipboard_set_html: Option<Box<dyn FnMut(&str, &str) -> bool>>,
     /// Audio output for media playback (cpal on desktop); without one media plays silently.
     pub audio_out: Option<Box<dyn deckcraft_media::AudioOut>>,
+    /// The host's cloud (Nextcloud, on the desktop): the File view's Nextcloud places use it
+    /// ([`cloud_files`]).
+    pub cloud: Option<cloud::Cloud>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,6 +496,8 @@ pub struct SlideApp {
     /// slides and status bar until Esc or Back; with nothing open it is the start screen. Opening,
     /// creating or closing a presentation leaves it.
     pub backstage: Option<backstage::Backstage>,
+    /// The File view's Nextcloud places, and conflicts and problems the host reports.
+    pub cloud_files: cloud_files::CloudFiles,
     pending_urls: Vec<String>,
     /// Text for the system clipboard from a Copy or Cut command, handed over on the next frame.
     pending_copy: Option<String>,
@@ -505,7 +512,7 @@ pub struct SlideApp {
     pub last_recovery: f64,
     /// Quit was confirmed (changes saved or discarded): let the window close.
     pub quit_confirmed: bool,
-    pub(crate) notes_buf: (u64, usize, notes::Draft),
+    pub(crate) notes_buf: (u64, deckcraft_model::SlideId, notes::Draft),
     /// Faces borrowed from the font database for text the interface fonts can't draw (#101).
     pub ui_fonts: uifonts::UiFonts,
     /// Thumbnail pane drag (slide index, current drop index).
@@ -584,10 +591,11 @@ impl SlideApp {
             last_time: 0.0,
             last_recovery: 0.0,
             quit_confirmed: false,
-            notes_buf: (0, usize::MAX, notes::Draft::default()),
+            notes_buf: (0, deckcraft_model::SlideId(u32::MAX), notes::Draft::default()),
             ui_fonts: uifonts::UiFonts::default(),
             thumb_drag: None,
             selpane: selpane::State::default(),
+            cloud_files: cloud_files::CloudFiles::default(),
             doc_window: None,
             sorter: sorter::State::default(),
             slides_focused: false,
@@ -1568,6 +1576,7 @@ impl SlideApp {
         self.last_time = now;
         self.drain_control(ctx);
         self.poll_opening();
+        cloud_files::poll(self);
         if self.fonts_ready {
             self.drain_inbox();
         }
@@ -1864,6 +1873,7 @@ impl SlideApp {
         });
         toast::note_missing_fonts(self);
         toast::show(self, &ctx);
+        cloud_files::show(self, &ctx);
         dialogs::show(self, &ctx);
         menus::palette(self, &ctx);
         for url in std::mem::take(&mut self.pending_urls) {
@@ -2045,6 +2055,8 @@ fn js_now() -> f64 {
 mod animpane_tests;
 #[cfg(test)]
 mod browsetheme_tests;
+#[cfg(test)]
+mod cloud_files_tests;
 #[cfg(test)]
 mod compare_tests;
 #[cfg(test)]
@@ -3064,6 +3076,46 @@ mod tests {
         let data = s.execute("file.saveBytes", &json!({"format": "pptx"})).unwrap()["data"].clone();
         s.execute("file.openBytes", &json!({"name": "notes.pptx", "data": data})).unwrap();
         check(&s.active().unwrap().doc.slides[0].notes);
+    }
+
+    /// Notes changed under a draft (a co-editor typing in them, a slide put in above) are taken
+    /// in: saving the draft keeps their text and goes to the slide it was written on.
+    #[test]
+    fn notes_draft_takes_in_changes_under_it() {
+        let mut session = Session::with_new();
+        session.execute("slide.notes", &json!({"index": 0, "text": "Hello world"})).unwrap();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(session, Services::default()),
+        );
+        harness.run_steps(2);
+        let id = egui::Id::new("notes_edit");
+        harness.ctx.memory_mut(|m| m.request_focus(id));
+        harness.run_steps(1);
+        let mut st = egui::TextEdit::load_state(&harness.ctx, id).unwrap_or_default();
+        st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(11))));
+        egui::TextEdit::store_state(&harness.ctx, id, st);
+        harness.run_steps(1);
+        harness.event(egui::Event::Text(" (Ann)".into()));
+        harness.run_steps(1);
+        // Someone else's edit lands in these notes, and a slide comes in above this one.
+        let s = &mut harness.state_mut().session;
+        s.execute("slide.notes", &json!({"index": 0, "text": "Bob: Hello world"})).unwrap();
+        s.execute("slide.new", &json!({"at": 0})).unwrap();
+        s.execute("slide.go", &json!({"index": 1})).unwrap();
+        harness.run_steps(1);
+        assert_eq!(harness.state().notes_buf.2.text, "Bob: Hello world (Ann)", "the draft takes the edit in");
+        // The caret stayed after the typed text.
+        harness.event(egui::Event::Text("!".into()));
+        harness.run_steps(1);
+        harness.ctx.memory_mut(|m| m.surrender_focus(id));
+        harness.run_steps(2);
+        let doc = &harness.state().session.active().unwrap().doc;
+        assert_eq!(doc.slides[1].notes.text(), "Bob: Hello world (Ann)!");
+        assert_eq!(doc.slides[0].notes.text(), "", "the new slide's notes are untouched");
     }
 
     fn step_app(services: Services) -> egui_kittest::Harness<'static, SlideApp> {

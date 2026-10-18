@@ -16,10 +16,17 @@
 //! Where two people change the same thing at once, the later one in the log wins it whole.
 //! Nothing here does I/O: the host moves ops between people ([`Replica`] is one person's copy).
 
+pub mod parts;
 mod replica;
 mod seq;
 mod shared;
 pub mod text;
+
+/// What this build's ops mean, for hosts to keep a session to one meaning: a copy that reads ops
+/// differently from the others (it ignores a part they send) drifts from them unseen. Raised
+/// whenever an op carries something an older build would misread: 1 whole shapes and notes, 2 text
+/// merging inside a shape, 3 text merging in table cells, grouped shapes and notes.
+pub const PROTOCOL: u32 = 3;
 
 pub use replica::{Incoming, Outgoing, Replica, Shown};
 pub use seq::SeqEdit;
@@ -71,11 +78,14 @@ impl ShapesPatch {
     }
 }
 
-/// An edit of one shape's text ([`text::Delta`] over its paragraphs).
+/// An edit of text in a top-level shape ([`text::Delta`] over the paragraphs at `part`: its own,
+/// a table cell's, or those of a shape inside the group).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TextEdit {
     pub id: ShapeId,
+    #[serde(flatten)]
+    pub part: parts::Part,
     pub delta: text::Delta,
 }
 
@@ -84,15 +94,22 @@ pub struct TextEdit {
 #[serde(default, rename_all = "camelCase")]
 pub struct SlideChange {
     pub id: SlideId,
+    /// The slide's settings. Its speaker notes (`notes`) travel with their paragraphs as they
+    /// were before, the paragraphs' edit in `notes`; with `notes_whole`, new and whole.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub fields: Fields,
     #[serde(skip_serializing_if = "ShapesPatch::is_empty")]
     pub shapes: ShapesPatch,
+    /// The edit of the speaker notes' paragraphs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<text::Delta>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub notes_whole: bool,
 }
 
 impl SlideChange {
     pub fn is_empty(&self) -> bool {
-        self.fields.is_empty() && self.shapes.is_empty()
+        self.fields.is_empty() && self.shapes.is_empty() && self.notes.is_none()
     }
 }
 
@@ -259,8 +276,9 @@ settings!(
     slide_settings,
     apply_slide_settings,
     Slide,
-    [layout, name, background, hidden, show_master_shapes, transition, animations, notes, comments, color_map, tags, raw_ext],
-    elsewhere: [id, shapes]
+    [layout, name, background, hidden, show_master_shapes, transition, animations, comments, color_map, tags, raw_ext],
+    // `notes`: by `capture_notes`, the paragraphs as text edits.
+    elsewhere: [id, shapes, notes]
 );
 
 settings!(
@@ -312,7 +330,9 @@ pub fn capture(before: &Presentation, after: &Presentation) -> Result<Op> {
             None => op.slides.added.push(s.clone()),
             Some(o) if Arc::ptr_eq(o, s) || ***o == **s => {}
             Some(o) => {
-                let change = SlideChange { id: s.id, fields: slide_settings(o, s)?, shapes: capture_shapes(&o.shapes, &s.shapes)? };
+                let mut change =
+                    SlideChange { id: s.id, fields: slide_settings(o, s)?, shapes: capture_shapes(&o.shapes, &s.shapes)?, ..SlideChange::default() };
+                capture_notes(&o.notes, &s.notes, &mut change)?;
                 if !change.is_empty() {
                     op.slides.changed.push(change);
                 }
@@ -350,19 +370,19 @@ fn capture_shapes(before: &[Shape], after: &[Shape]) -> Result<ShapesPatch> {
         match old.get(&s.id) {
             None => patch.put.push(s.clone()),
             Some(o) if same(*o, s) => {}
-            Some(o) => match text_change(o, s) {
-                Some((rest_changed, delta)) => {
+            Some(o) => match text_changes(o, s) {
+                Some((rest_changed, deltas)) => {
                     if rest_changed {
-                        // As it was before, text-wise: the text's change travels on its own.
+                        // As it was before, text-wise: the text's changes travel on their own.
                         let mut put = s.clone();
-                        if let (Some(t), Some(old)) = (put.text.as_mut(), o.text.as_ref()) {
-                            t.paragraphs = old.paragraphs.clone();
+                        for (part, paras) in parts::parts(o) {
+                            if let Some(p) = parts::part_mut(&mut put, &part) {
+                                *p = paras.to_vec();
+                            }
                         }
                         patch.put.push(put);
                     }
-                    if let Some(delta) = delta {
-                        patch.text.push(TextEdit { id: s.id, delta });
-                    }
+                    patch.text.extend(deltas.into_iter().map(|(part, delta)| TextEdit { id: s.id, part, delta }));
                 }
                 None => {
                     patch.put.push(s.clone());
@@ -374,26 +394,60 @@ fn capture_shapes(before: &[Shape], after: &[Shape]) -> Result<ShapesPatch> {
     Ok(patch)
 }
 
-/// How the shape `o` became `s` when both have text: whether anything besides the paragraphs
-/// changed, and the paragraphs' edit if they did. `None`: send the shape whole (no text on one
-/// side, or an edit that wouldn't give back exactly `s`'s paragraphs).
-fn text_change(o: &Shape, s: &Shape) -> Option<(bool, Option<text::Delta>)> {
-    let (Some(ot), Some(st)) = (&o.text, &s.text) else { return None };
-    let bare = |sh: &Shape| {
-        let mut sh = sh.clone();
-        if let Some(t) = sh.text.as_mut() {
-            t.paragraphs.clear();
-        }
-        sh
-    };
-    let rest_changed = !same(&bare(o), &bare(s));
-    if same(&ot.paragraphs, &st.paragraphs) {
-        return Some((rest_changed, None));
+/// How the shape `o` became `s`: whether anything besides the paragraphs of its text (its own,
+/// its table cells', its group's shapes') changed, and the edits of the paragraphs that did.
+/// `None`: send the shape whole (no text at all, text in other places than before, or an edit
+/// that wouldn't give back exactly `s`'s paragraphs).
+fn text_changes(o: &Shape, s: &Shape) -> Option<(bool, Vec<(parts::Part, text::Delta)>)> {
+    let (po, ps) = (parts::parts(o), parts::parts(s));
+    if po.is_empty() || po.len() != ps.len() || po.iter().zip(&ps).any(|(a, b)| a.0 != b.0) {
+        return None;
     }
-    let delta = text::diff(&ot.paragraphs, &st.paragraphs).ok()?;
-    let mut check = ot.paragraphs.clone();
+    let rest_changed = !same(&parts::bare(o), &parts::bare(s));
+    let mut deltas = Vec::new();
+    for ((part, old), (_, new)) in po.into_iter().zip(ps) {
+        if same(&old, &new) {
+            continue;
+        }
+        deltas.push((part, exact_delta(old, new)?));
+    }
+    Some((rest_changed, deltas))
+}
+
+/// The edit turning `old` into `new`, if applying it gives back exactly `new`.
+fn exact_delta(old: &[deckcraft_model::text::Paragraph], new: &[deckcraft_model::text::Paragraph]) -> Option<text::Delta> {
+    let delta = text::diff(old, new).ok()?;
+    let mut check = old.to_vec();
     text::apply(&mut check, &delta).ok()?;
-    (check == st.paragraphs).then_some((rest_changed, Some(delta)))
+    (check == new).then_some(delta)
+}
+
+/// The speaker notes' change into `change`: their paragraphs as a text edit, anything else about
+/// them (with the paragraphs as they were) as the setting `notes`; the whole notes as the
+/// setting where the edit couldn't say it exactly.
+fn capture_notes(o: &deckcraft_model::text::TextBody, s: &deckcraft_model::text::TextBody, change: &mut SlideChange) -> Result<()> {
+    if same(o, s) {
+        return Ok(());
+    }
+    let delta = if same(&o.paragraphs, &s.paragraphs) { None } else { exact_delta(&o.paragraphs, &s.paragraphs) };
+    let mut rest = s.clone();
+    rest.paragraphs = o.paragraphs.clone();
+    match delta {
+        Some(d) => {
+            change.notes = Some(d);
+            if !same(o, &rest) {
+                change.fields.insert("notes".into(), to_json(&rest)?);
+            }
+        }
+        None if same(&o.paragraphs, &s.paragraphs) => {
+            change.fields.insert("notes".into(), to_json(s)?);
+        }
+        None => {
+            change.fields.insert("notes".into(), to_json(s)?);
+            change.notes_whole = true;
+        }
+    }
+    Ok(())
 }
 
 /// Applies `op` to `p`. On an error `p` may be half changed: apply to a copy. Every copy refuses
@@ -434,7 +488,16 @@ pub fn apply(p: &mut Presentation, op: &Op) -> Result<()> {
         // A slide someone else removed meanwhile: its changes go with it.
         let Some(slide) = p.slides.iter_mut().find(|s| s.id == change.id) else { continue };
         let s = Arc::make_mut(slide);
-        apply_slide_settings(s, &change.fields)?;
+        if let Some(notes) = change.fields.get("notes") {
+            s.notes = from_json(notes)?;
+        }
+        if change.fields.len() > usize::from(change.fields.contains_key("notes")) {
+            let others: Fields = change.fields.iter().filter(|(k, _)| k.as_str() != "notes").map(|(k, v)| (k.clone(), v.clone())).collect();
+            apply_slide_settings(s, &others)?;
+        }
+        if let Some(d) = &change.notes {
+            text::apply(&mut s.notes.paragraphs, d)?;
+        }
         order_work(change.shapes.edits.len(), s.shapes.len())?;
         let put = &change.shapes.put;
         seq::apply(&mut s.shapes, &change.shapes.edits, |x| x.id, |id| put.iter().find(|x| x.id == id).cloned());
@@ -446,8 +509,8 @@ pub fn apply(p: &mut Presentation, op: &Op) -> Result<()> {
         }
         for t in &change.shapes.text {
             // A shape someone removed (or whose text went) meanwhile: its text edit goes with it.
-            if let Some(body) = s.shapes.iter_mut().find(|x| x.id == t.id).and_then(|x| x.text.as_mut()) {
-                text::apply(&mut body.paragraphs, &t.delta)?;
+            if let Some(paras) = s.shapes.iter_mut().find(|x| x.id == t.id).and_then(|x| parts::part_mut(x, &t.part)) {
+                text::apply(paras, &t.delta)?;
             }
         }
         if !change.shapes.is_empty() {
@@ -551,9 +614,7 @@ pub fn rebase(a: &Op, b: &Op, a_first: bool) -> Op {
             continue;
         }
         let c = match changed.get(&c.id) {
-            Some(theirs) => {
-                SlideChange { id: c.id, fields: settings(&c.fields, &theirs.fields), shapes: rebase_shapes(&c.shapes, &theirs.shapes, a_first) }
-            }
+            Some(theirs) => rebase_slide(c, theirs, a_first),
             None => c.clone(),
         };
         if !c.is_empty() {
@@ -569,7 +630,7 @@ fn rebase_shapes(a: &ShapesPatch, b: &ShapesPatch, a_first: bool) -> ShapesPatch
     let edits = seq::rebase(&a.edits, &b.edits, a_first);
     let kept = inserts(&edits);
     let dropped: HashSet<ShapeId> = inserts(&a.edits).difference(&kept).copied().collect();
-    let their_text: HashMap<ShapeId, &text::Delta> = b.text.iter().map(|t| (t.id, &t.delta)).collect();
+    let their_text: HashMap<(ShapeId, parts::Part), &text::Delta> = b.text.iter().map(|t| ((t.id, t.part), &t.delta)).collect();
     let their_whole: HashSet<ShapeId> = b.whole.iter().copied().collect();
     let mine_whole: HashSet<ShapeId> = a.whole.iter().copied().collect();
     let put: Vec<Shape> = a
@@ -580,13 +641,15 @@ fn rebase_shapes(a: &ShapesPatch, b: &ShapesPatch, a_first: bool) -> ShapesPatch
             // A shape put with its text as it was: with `b`'s typing in that text, so putting it
             // after `b` doesn't take `b`'s typing back.
             let mut s = s.clone();
-            if !mine_whole.contains(&s.id)
-                && let Some(d) = their_text.get(&s.id)
-                && let Some(t) = s.text.as_mut()
-            {
-                let mut paras = t.paragraphs.clone();
-                if text::apply(&mut paras, d).is_ok() {
-                    t.paragraphs = paras;
+            let id = s.id;
+            if !mine_whole.contains(&id) {
+                for t in b.text.iter().filter(|t| t.id == id) {
+                    if let Some(paras) = parts::part_mut(&mut s, &t.part) {
+                        let mut next = paras.clone();
+                        if text::apply(&mut next, &t.delta).is_ok() {
+                            *paras = next;
+                        }
+                    }
                 }
             }
             s
@@ -599,13 +662,40 @@ fn rebase_shapes(a: &ShapesPatch, b: &ShapesPatch, a_first: bool) -> ShapesPatch
         .iter()
         // A shape `b` removed, or whose text `b` replaced whole: the edit no longer fits.
         .filter(|t| !gone.contains(&t.id) && !their_whole.contains(&t.id))
-        .map(|t| match their_text.get(&t.id) {
-            Some(d) => TextEdit { id: t.id, delta: text::transform(&t.delta, d, a_first) },
+        .map(|t| match their_text.get(&(t.id, t.part)) {
+            Some(d) => TextEdit { id: t.id, part: t.part, delta: text::transform(&t.delta, d, a_first) },
             None => t.clone(),
         })
         .filter(|t| !t.delta.is_noop())
         .collect();
     ShapesPatch { edits, put, text, whole }
+}
+
+/// `a`'s change of a slide rebased over `b`'s change of the same slide.
+fn rebase_slide(a: &SlideChange, b: &SlideChange, a_first: bool) -> SlideChange {
+    let mut fields: Fields = a.fields.iter().filter(|(k, _)| !(a_first && b.fields.contains_key(*k))).map(|(k, v)| (k.clone(), v.clone())).collect();
+    // The notes put with their paragraphs as they were: with `b`'s typing in them.
+    if !a.notes_whole
+        && let (Some(v), Some(d)) = (fields.get_mut("notes"), &b.notes)
+        && let Ok(mut notes) = deckcraft_model::text::TextBody::deserialize(&*v)
+        && text::apply(&mut notes.paragraphs, d).is_ok()
+        && let Ok(json) = to_json(&notes)
+    {
+        *v = json;
+    }
+    let notes = match (&a.notes, &b.notes) {
+        // `b` replaced the notes whole: the edit no longer fits.
+        (Some(_), _) if b.notes_whole => None,
+        (Some(mine), Some(theirs)) => Some(text::transform(mine, theirs, a_first)).filter(|d| !d.is_noop()),
+        (mine, _) => mine.clone(),
+    };
+    SlideChange {
+        id: a.id,
+        notes_whole: a.notes_whole && fields.contains_key("notes"),
+        fields,
+        shapes: rebase_shapes(&a.shapes, &b.shapes, a_first),
+        notes,
+    }
 }
 
 fn removals<I: Copy + Eq + std::hash::Hash>(edits: &[SeqEdit<I>]) -> HashSet<I> {

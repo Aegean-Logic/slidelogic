@@ -61,8 +61,9 @@ impl SlideApp {
         }
     }
 
-    /// Take the background read's result when it has arrived.
-    pub(crate) fn poll_opening(&mut self) {
+    /// Take the background read's result when it has arrived (every frame; hosts' tests that
+    /// don't run frames call it themselves).
+    pub fn poll_opening(&mut self) {
         let Some(o) = &self.opening else { return };
         let r = match o.rx.try_recv() {
             Ok(r) => r,

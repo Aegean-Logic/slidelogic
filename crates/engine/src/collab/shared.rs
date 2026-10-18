@@ -76,16 +76,24 @@ fn follow_view(st: &mut DocState, before: &Presentation, op: Option<&super::Op>)
     }
     let Some(op) = op else { return };
     let Some(ts) = st.selection.text.as_mut() else { return };
-    if ts.notes || ts.cell.is_some() {
-        return;
-    }
-    let Some(delta) =
-        op.slides.changed.iter().find(|c| c.id == slide).and_then(|c| c.shapes.text.iter().find(|t| t.id == ts.shape)).map(|t| &t.delta)
-    else {
-        return;
+    let Some(change) = op.slides.changed.iter().find(|c| c.id == slide) else { return };
+    // The edit of the text being edited, and that text before and after it: the notes, or a
+    // shape's own text or one of its table cells (the shape may sit inside a group).
+    let (delta, old, new) = if ts.notes {
+        let Some(delta) = &change.notes else { return };
+        let notes = |p: &Presentation| p.slide(slide).map(|s| s.notes.paragraphs.clone());
+        let (Some(old), Some(new)) = (notes(before), notes(&st.doc)) else { return };
+        (delta, old, new)
+    } else {
+        let Some((top, part)) = before.slide(slide).and_then(|s| super::parts::locate(&s.shapes, ts.shape, ts.cell)) else { return };
+        let Some(delta) = change.shapes.text.iter().find(|t| t.id == top && t.part == part).map(|t| &t.delta) else { return };
+        let paras = |p: &Presentation| {
+            let mut sh = p.slide(slide)?.shapes.iter().find(|s| s.id == top)?.clone();
+            super::parts::part_mut(&mut sh, &part).map(|v| v.clone())
+        };
+        let (Some(old), Some(new)) = (paras(before), paras(&st.doc)) else { return };
+        (delta, old, new)
     };
-    let paras = |p: &Presentation| p.slide(slide).and_then(|s| s.shape(ts.shape)).and_then(|sh| sh.text.as_ref()).map(|t| t.paragraphs.clone());
-    let (Some(old), Some(new)) = (paras(before), paras(&st.doc)) else { return };
     let map = |at: (usize, usize)| super::text::pos_at(&new, delta.map_pos(super::text::flat_pos(&old, at), true));
     ts.anchor = map(ts.anchor);
     ts.caret = map(ts.caret);

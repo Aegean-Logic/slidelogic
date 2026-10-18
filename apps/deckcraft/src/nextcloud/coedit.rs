@@ -1,0 +1,759 @@
+//! Live co-editing for a presentation opened from Nextcloud: the desktop joins the same session
+//! as the browser editor (`deckcraft-nextcloud`'s `/apps/deckcraft/collab/*`, signed in with the
+//! app password) and does what the page's `collab.js` does there. Edits go out one at a time,
+//! everyone's come back in the server's order, people's places travel with each poll, and an
+//! editor saves the shared presentation to the file now and then (a checkpoint), with the engine's
+//! state snapshot of it, so people joining later start from exactly the shared presentation.
+//!
+//! A worker thread talks to the server; the UI thread ([`Coedit::poll`]) moves edits between it
+//! and the engine. Ported from WordLogic's `apps/wordcraft/src/nextcloud/coedit.rs`. One
+//! presentation is shared at a time (the engine's one shared presentation); another from Nextcloud
+//! opens unshared.
+
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+
+use deckcraft_engine::collab::{Incoming, Op, Other, PROTOCOL};
+use deckcraft_engine::model::{Presentation, ShapeId, SlideId};
+use deckcraft_ui_egui::SlideApp;
+use serde::Deserialize;
+use serde_json::{Value as Json, json};
+
+use super::{Connection, State, encode, lock, mtime, persist, tie_key};
+
+/// Save the shared presentation after this many log entries, or this long after the first
+/// unsaved one (as the browser does); after a Save here, at most this often.
+const CHECKPOINT_OPS: u64 = 20;
+const CHECKPOINT_SECONDS: f64 = 30.0;
+const SAVE_CHECKPOINT_SECONDS: f64 = 10.0;
+/// How often to ask for others' edits.
+const POLL: Duration = Duration::from_millis(600);
+/// How long quitting waits for the worker to save what isn't in the file yet and leave the session.
+const LEAVE_WAIT: Duration = Duration::from_secs(15);
+/// The browser's colours for people (`deckcraft-nextcloud/src/collab.js`), so everyone shows in
+/// the same colour on every copy.
+const COLORS: [[u8; 3]; 8] = [
+    [0xC0, 0x39, 0x2B],
+    [0x1F, 0x6F, 0xB2],
+    [0x8E, 0x44, 0xAD],
+    [0xB9, 0x77, 0x0E],
+    [0x14, 0x8F, 0x77],
+    [0xAD, 0x14, 0x57],
+    [0x2E, 0x7D, 0x32],
+    [0x6D, 0x4C, 0x41],
+];
+
+/// Said when the session is on a newer SlideLogic than this one, whose edits this one would
+/// misread: at joining, and when someone joins with one.
+pub(super) const OUTDATED: &str = "Someone is editing this presentation with a newer SlideLogic, so it opened here without editing together. Update SlideLogic to edit it with them.";
+const OUTDATED_NOW: &str = "Someone joined with a newer SlideLogic, so editing together stopped here. Update SlideLogic to go on editing with them.";
+
+/// Whether the session's build (`join`'s `build`: the newest co-editing protocol in it) is newer
+/// than this one's.
+fn newer_than_mine(build: Option<&Json>) -> bool {
+    build.and_then(Json::as_str).and_then(|b| b.trim().parse::<u32>().ok()).is_some_and(|b| b > PROTOCOL)
+}
+
+/// Someone's colour, as the page gives it.
+fn color_for(client: u64) -> [u8; 3] {
+    let i = (client.max(1) - 1) % COLORS.len() as u64;
+    COLORS.get(i as usize).copied().unwrap_or(COLORS[0])
+}
+
+/// Someone in the session, as the server lists them.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Member {
+    client: u64,
+    #[serde(default)]
+    user_id: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default = "yes")]
+    can_edit: bool,
+    /// Where they are, as their SlideLogic sent it (`Session::collab_presence`, JSON text).
+    #[serde(default)]
+    selection: String,
+    /// Seen in the last few seconds: shown to the others. One gone without leaving (a closed
+    /// laptop) stops showing quickly, though it stays a member a while longer.
+    #[serde(default = "yes")]
+    recent: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Member {
+    fn name(&self) -> &str {
+        if self.display_name.is_empty() { &self.user_id } else { &self.display_name }
+    }
+
+    /// Where they are, for drawing: the slide they're on and the shapes they selected, if what
+    /// they sent reads.
+    fn other(&self) -> Option<Other> {
+        let at: Json = serde_json::from_str(&self.selection).ok()?;
+        let id = |v: &Json| v.as_u64().and_then(|n| u32::try_from(n).ok());
+        let slide = match at.get("slide") {
+            None | Some(Json::Null) => None,
+            Some(s) => Some(SlideId(id(s)?)),
+        };
+        let shapes = at.get("shapes").and_then(Json::as_array).map(|a| a.iter().filter_map(id).map(ShapeId).collect()).unwrap_or_default();
+        Some(Other::new(self.client, self.name(), color_for(self.client), slide, shapes))
+    }
+}
+
+/// What joining gave: the session the downloaded file belongs to.
+#[derive(Clone, Debug)]
+pub(super) struct Joined {
+    session_id: u64,
+    client: u64,
+    seq: u64,
+    entries: Vec<Incoming>,
+    members: Vec<Member>,
+    can_edit: bool,
+    /// The shared presentation as of `seq` (the checkpoint's state snapshot), when the session
+    /// keeps one: opened instead of the file, whose re-read ids would differ.
+    state: Option<String>,
+    /// The file's ETag as downloaded (no quotes): the session's checkpoint.
+    etag: String,
+    /// The file, relative to the user's files.
+    remote: String,
+}
+
+impl Joined {
+    /// Leaves the session without having shared anything (the presentation never opened).
+    pub(super) fn leave(&self, state: &Arc<Mutex<State>>) {
+        let (state, body) = (state.clone(), json!({"sessionId": self.session_id, "client": self.client}));
+        let _ = std::thread::Builder::new().name("nextcloud leave".into()).spawn(move || {
+            if let Ok(nc) = Connection::open(&state) {
+                let _ = nc.app("POST", "collab/leave", &body);
+            }
+        });
+    }
+}
+
+/// Log entries as the server sends them (each op as JSON text); an op that doesn't parse
+/// becomes a no-op in its place.
+fn entries(v: Option<&Json>) -> Vec<Incoming> {
+    v.and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let num = |k: &str| e.get(k).and_then(Json::as_u64);
+            let op: Op = e.get("op").and_then(Json::as_str).and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+            Some(Incoming { seq: num("seq")?, client: num("client")?, client_seq: num("client_seq")?, base: num("base")?, op })
+        })
+        .collect()
+}
+
+/// Joins the session for `file_id`, pinned to the version downloaded (`etag`), with the state
+/// snapshot for where it starts when the session keeps one. `None`: the session saved a newer
+/// version since (or replaced the snapshot); download again.
+pub(super) fn join(nc: &Connection, file_id: u64, etag: &str, remote: &str) -> Result<Option<Joined>, String> {
+    let etag = etag.trim_start_matches("W/").trim_matches('"').to_string();
+    // `build`: what this build's ops mean; the server sends anyone on an older one to reload.
+    let r = nc.app("POST", "collab/join", &json!({"fileId": file_id, "etag": etag, "build": PROTOCOL.to_string()}))?;
+    if r.get("retry").and_then(Json::as_bool) == Some(true) {
+        return Ok(None);
+    }
+    let num = |k: &str| r.get(k).and_then(Json::as_u64).ok_or_else(|| format!("Nextcloud's co-editing answer had no {k}."));
+    let (session_id, client, seq) = (num("sessionId")?, num("client")?, num("seq")?);
+    if newer_than_mine(r.get("build")) {
+        let _ = nc.app("POST", "collab/leave", &json!({"sessionId": session_id, "client": client}));
+        return Err(OUTDATED.into());
+    }
+    let state = if r.get("hasState").and_then(Json::as_bool) == Some(true) {
+        let a = nc.app_raw("GET", &format!("collab/state?sessionId={session_id}&client={client}&seq={seq}"), &Json::Null)?;
+        if a.status != 200 {
+            // Saved again in between (that save replaced the snapshot): start over from the newer
+            // file.
+            let _ = nc.app("POST", "collab/leave", &json!({"sessionId": session_id, "client": client}));
+            return Ok(None);
+        }
+        Some(String::from_utf8(a.body).map_err(|_| "Nextcloud's copy of the shared presentation isn't text.".to_string())?)
+    } else {
+        None
+    };
+    Ok(Some(Joined {
+        session_id,
+        client,
+        seq,
+        entries: entries(r.get("entries")),
+        members: r.get("members").cloned().and_then(|m| serde_json::from_value(m).ok()).unwrap_or_default(),
+        can_edit: r.get("canEdit").and_then(Json::as_bool) != Some(false),
+        state,
+        etag,
+        remote: remote.to_string(),
+    }))
+}
+
+/// A checkpoint for the worker to write: the shared presentation at `seq`, in `format`.
+struct Job {
+    seq: u64,
+    doc: Arc<Presentation>,
+    format: &'static str,
+}
+
+enum Event {
+    /// This copy can't follow the session any more: open the file again.
+    Rejoin,
+    /// The session can't go on (the file changed outside it).
+    End(String),
+    /// The server refused this person's edits for good (they can only view now).
+    Refused(String),
+    Notice(String, bool),
+    /// The shared presentation as of this log position is in the file.
+    Saved(u64),
+}
+
+/// Between the UI thread and the worker.
+#[derive(Default)]
+struct Link {
+    /// This person's edits, in order: (client sequence number, base, op as JSON text).
+    outbox: VecDeque<(u64, u64, String)>,
+    entries: Vec<Incoming>,
+    members: Option<Vec<Member>>,
+    checkpoint_seq: u64,
+    checkpoint_etag: String,
+    /// This person's place (JSON), for the next poll.
+    selection: String,
+    job: Option<Job>,
+    writing: bool,
+    events: Vec<Event>,
+    stop: bool,
+}
+
+fn link(l: &Mutex<Link>) -> MutexGuard<'_, Link> {
+    l.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What became of the session this frame.
+pub(super) enum Status {
+    Going,
+    /// The shared presentation was closed, or the session ended: sharing is over.
+    Over,
+    /// Open the file again and rejoin.
+    Rejoin,
+}
+
+/// A shared presentation (the UI thread's side).
+pub(super) struct Coedit {
+    /// [`deckcraft_engine::DocState::uid`] of the shared presentation.
+    uid: u64,
+    /// The local copy (its record's key) and the Nextcloud file.
+    pub(super) local: String,
+    pub(super) remote: String,
+    client: u64,
+    can_edit: bool,
+    link: Arc<Mutex<Link>>,
+    members: Vec<Member>,
+    first_unsaved_at: Option<f64>,
+    last_save_checkpoint: f64,
+    /// It had unsaved changes last frame: a Save here (clean now) asks for a checkpoint.
+    was_dirty: bool,
+    /// The presentation as shown when the checkpoint being written was taken, if it had nothing
+    /// of this person's still unconfirmed: once that checkpoint is in the file, a presentation
+    /// still showing exactly this is saved.
+    writing_shown: Option<(u64, Arc<Presentation>)>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Coedit {
+    /// Shares the active presentation (just opened from the downloaded file) in the joined
+    /// session: from the session's state snapshot when it keeps one, then catching up on the log.
+    pub(super) fn start(app: &mut SlideApp, joined: Joined, local: String, state: Arc<Mutex<State>>, ctx: &egui::Context) -> Result<Coedit, String> {
+        let started = Self::share(app, &joined);
+        if let Err(e) = started {
+            app.session.collab_stop();
+            joined.leave(&state);
+            return Err(e);
+        }
+        let last_seq = joined.entries.last().map_or(joined.seq, |e| e.seq.max(joined.seq));
+        if !joined.can_edit {
+            app.set_status("You can view this presentation but not edit it.");
+        }
+        let link = Arc::new(Mutex::new(Link { checkpoint_seq: joined.seq, checkpoint_etag: joined.etag.clone(), ..Link::default() }));
+        let worker = Worker {
+            state,
+            link: link.clone(),
+            ctx: ctx.clone(),
+            session_id: joined.session_id,
+            client: joined.client,
+            last_seq,
+            remote: joined.remote.clone(),
+            local: local.clone(),
+            sent_selection: String::new(),
+        };
+        let handle = std::thread::Builder::new().name("nextcloud co-editing".into()).spawn(move || worker.run()).map_err(|e| e.to_string());
+        let handle = match handle {
+            Ok(h) => h,
+            Err(e) => {
+                app.session.collab_stop();
+                return Err(e);
+            }
+        };
+        let uid = app.session.active().map(|d| d.uid).unwrap_or_default();
+        let c = Coedit {
+            uid,
+            local,
+            remote: joined.remote,
+            client: joined.client,
+            can_edit: joined.can_edit,
+            link,
+            members: joined.members,
+            first_unsaved_at: None,
+            last_save_checkpoint: f64::NEG_INFINITY,
+            was_dirty: false,
+            writing_shown: None,
+            worker: Some(handle),
+        };
+        c.say_who(app, &[]);
+        c.show_others(app);
+        Ok(c)
+    }
+
+    /// The engine's side of joining.
+    fn share(app: &mut SlideApp, joined: &Joined) -> Result<(), String> {
+        if let Some(snapshot) = &joined.state {
+            app.session.collab_load_snapshot(snapshot).map_err(|e| e.to_string())?;
+        }
+        app.session.collab_start(joined.client, joined.seq).map_err(|e| e.to_string())?;
+        app.session.collab_set_read_only(!joined.can_edit);
+        for e in joined.entries.iter().filter(|e| e.seq > joined.seq) {
+            app.session.collab_receive(e.clone()).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Quitting: what everyone has confirmed but isn't in the file yet goes there first (the log
+    /// keeps it too, but only while the session lasts), then the worker leaves ([`Coedit::stop`]).
+    pub(super) fn finish(&self, app: &mut SlideApp) {
+        if self.can_edit
+            && let Some((seq, doc)) = app.session.collab_confirmed()
+        {
+            let mut l = link(&self.link);
+            if seq > l.checkpoint_seq && l.job.is_none() && !l.writing {
+                l.job = Some(Job { seq, doc: doc.clone(), format: format_of(&self.remote) });
+            }
+        }
+        self.stop(app);
+    }
+
+    /// Stops sharing: the worker leaves the session.
+    pub(super) fn stop(&self, app: &mut SlideApp) {
+        link(&self.link).stop = true;
+        if app.session.collab_client() == Some(self.client) {
+            app.session.collab_stop();
+        }
+    }
+
+    /// Waits a moment for the worker to have left the session (when quitting).
+    pub(super) fn join_worker(mut self) {
+        let Some(handle) = self.worker.take() else { return };
+        let until = std::time::Instant::now() + LEAVE_WAIT;
+        while !handle.is_finished() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Every frame: everyone's edits in, this person's out, places both ways, checkpoints.
+    pub(super) fn poll(&mut self, app: &mut SlideApp, now: f64) -> Status {
+        if !app.session.collab_shares(self.uid) || app.session.collab_client() != Some(self.client) {
+            // The shared presentation was closed.
+            return Status::Over;
+        }
+        let (entries, members, events) = {
+            let mut l = link(&self.link);
+            (std::mem::take(&mut l.entries), l.members.take(), std::mem::take(&mut l.events))
+        };
+        for e in entries {
+            if app.session.collab_receive(e).is_err() {
+                return Status::Rejoin;
+            }
+        }
+        for event in events {
+            match event {
+                Event::Rejoin => return Status::Rejoin,
+                Event::End(text) => {
+                    app.cloud_files.notice = Some(("Co-editing stopped".into(), text));
+                    return Status::Over;
+                }
+                Event::Refused(text) => {
+                    app.session.collab_refused();
+                    app.session.collab_set_read_only(true);
+                    self.can_edit = false;
+                    app.cloud_files.notice = Some(("Nextcloud".into(), text));
+                }
+                Event::Notice(text, true) => app.cloud_files.notice = Some(("Nextcloud".into(), text)),
+                Event::Notice(text, false) => app.set_status(text),
+                Event::Saved(seq) => self.saved(app, seq),
+            }
+        }
+        if let Some(notice) = app.session.collab_take_notice() {
+            app.notify(notice);
+        }
+        if let Some(m) = members
+            && m != self.members
+        {
+            let before = std::mem::replace(&mut self.members, m);
+            self.say_who(app, &before);
+            self.show_others(app);
+        }
+        while let Some(out) = app.session.collab_outgoing() {
+            let op = serde_json::to_string(&out.op).unwrap_or_else(|_| "{}".into());
+            link(&self.link).outbox.push_back((out.client_seq, out.base, op));
+        }
+        // This person's place, for the others (the same JSON the browser sends).
+        let selection = app.session.collab_presence().to_string();
+        {
+            let mut l = link(&self.link);
+            if l.selection != selection {
+                l.selection = selection;
+            }
+        }
+        let dirty = app.session.documents().iter().any(|d| d.uid == self.uid && d.is_dirty());
+        let just_saved = self.was_dirty && !dirty;
+        self.was_dirty = dirty;
+        self.maybe_checkpoint(app, now, just_saved);
+        Status::Going
+    }
+
+    /// A checkpoint is in the file: the presentation counts as saved if it still shows exactly
+    /// what was saved.
+    fn saved(&mut self, app: &mut SlideApp, seq: u64) {
+        let Some((at, shown)) = self.writing_shown.take() else { return };
+        if at != seq {
+            return;
+        }
+        if let Some(st) = app.session.document_mut(self.uid)
+            && Arc::ptr_eq(&st.doc, &shown)
+        {
+            st.saved_doc = st.doc.clone();
+            st.revision += 1;
+            self.was_dirty = false;
+        }
+    }
+
+    /// Where the others are, drawn on the slides in their colours with their names, as in the
+    /// browser (the colours are the page's).
+    fn show_others(&self, app: &mut SlideApp) {
+        app.session.collab_set_others(others(&self.members, self.client));
+    }
+
+    /// Who came and went, on the status bar.
+    fn say_who(&self, app: &mut SlideApp, before: &[Member]) {
+        let others = |list: &[Member]| -> Vec<(u64, String)> {
+            list.iter().filter(|m| m.client != self.client && m.recent).map(|m| (m.client, m.name().to_string())).collect()
+        };
+        let (was, now) = (others(before), others(&self.members));
+        let came: Vec<&str> = now.iter().filter(|p| !was.contains(p)).map(|(_, n)| n.as_str()).collect();
+        let went: Vec<&str> = was.iter().filter(|p| !now.contains(p)).map(|(_, n)| n.as_str()).collect();
+        if !came.is_empty() {
+            app.set_status(format!("Editing together with {}", came.join(", ")));
+        } else if !went.is_empty() {
+            app.set_status(format!("{} stopped editing", went.join(", ")));
+        }
+    }
+
+    /// The editor with the lowest client id saves when enough has changed; a Save here saves
+    /// (an editor's, at most every few seconds).
+    fn maybe_checkpoint(&mut self, app: &SlideApp, now: f64, just_saved: bool) {
+        if !self.can_edit {
+            return;
+        }
+        let Some((seq, doc)) = app.session.collab_confirmed() else { return };
+        let mut l = link(&self.link);
+        if seq <= l.checkpoint_seq {
+            self.first_unsaved_at = None;
+            return;
+        }
+        let first = *self.first_unsaved_at.get_or_insert(now);
+        let writer = self.members.iter().filter(|m| m.can_edit).map(|m| m.client).min().unwrap_or(self.client) == self.client;
+        let due = writer && (seq - l.checkpoint_seq >= CHECKPOINT_OPS || now - first >= CHECKPOINT_SECONDS);
+        let asked = just_saved && now - self.last_save_checkpoint >= SAVE_CHECKPOINT_SECONDS;
+        if (due || asked) && l.job.is_none() && !l.writing {
+            if asked {
+                self.last_save_checkpoint = now;
+            }
+            let shown = app.session.documents().iter().find(|d| d.uid == self.uid).map(|d| d.doc.clone());
+            self.writing_shown = shown.filter(|_| !app.session.collab_pending()).map(|s| (seq, s));
+            l.job = Some(Job { seq, doc: doc.clone(), format: format_of(&self.remote) });
+        }
+    }
+}
+
+/// The format a Nextcloud file is written in, by its name (`deckcraft-nextcloud` co-edits these).
+fn format_of(remote: &str) -> &'static str {
+    match super::extension(remote).as_str() {
+        "potx" => "potx",
+        "ppsx" => "ppsx",
+        "deckcraft" => "deckcraft",
+        _ => "pptx",
+    }
+}
+
+/// The worker thread's side.
+struct Worker {
+    state: Arc<Mutex<State>>,
+    link: Arc<Mutex<Link>>,
+    ctx: egui::Context,
+    session_id: u64,
+    client: u64,
+    last_seq: u64,
+    remote: String,
+    local: String,
+    sent_selection: String,
+}
+
+impl Worker {
+    fn run(mut self) {
+        let nc = match Connection::open(&self.state) {
+            Ok(nc) => nc,
+            Err(e) => return self.event(Event::End(e)),
+        };
+        loop {
+            if link(&self.link).stop {
+                // A checkpoint asked for (or left by quitting) goes to the file before leaving.
+                let job = link(&self.link).job.take();
+                if let Some(job) = job {
+                    let _ = self.checkpoint(&nc, job);
+                }
+                let _ = nc.app("POST", "collab/leave", &json!({"sessionId": self.session_id, "client": self.client}));
+                return;
+            }
+            if !self.push(&nc) {
+                return;
+            }
+            let job = link(&self.link).job.take();
+            if let Some(job) = job {
+                link(&self.link).writing = true;
+                let ok = self.checkpoint(&nc, job);
+                link(&self.link).writing = false;
+                if !ok {
+                    return;
+                }
+            }
+            match self.sync(&nc) {
+                Some(true) => continue,
+                Some(false) => self.wait(POLL),
+                None => return,
+            }
+        }
+    }
+
+    /// Sleeps, waking early when sharing stops or an edit is waiting to go.
+    fn wait(&self, d: Duration) {
+        let until = std::time::Instant::now() + d;
+        while std::time::Instant::now() < until {
+            {
+                let l = link(&self.link);
+                if l.stop || !l.outbox.is_empty() || l.job.is_some() {
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn event(&self, e: Event) {
+        link(&self.link).events.push(e);
+        self.ctx.request_repaint();
+    }
+
+    /// Sends queued edits in order. False when the session is over for this copy.
+    fn push(&self, nc: &Connection) -> bool {
+        loop {
+            let Some((client_seq, base, op)) = link(&self.link).outbox.front().cloned() else { return true };
+            let body = json!({"sessionId": self.session_id, "client": self.client, "clientSeq": client_seq, "base": base, "op": op});
+            match nc.app_status("POST", "collab/push", &body) {
+                Ok((200..=299, _)) => {
+                    link(&self.link).outbox.pop_front();
+                }
+                Ok((403, _)) => {
+                    link(&self.link).outbox.clear();
+                    self.event(Event::Refused("You can view this presentation but not edit it: your changes aren't shared.".into()));
+                }
+                Ok((409, body)) => {
+                    self.event(if outdated(&body) { Event::End(OUTDATED_NOW.into()) } else { Event::Rejoin });
+                    return false;
+                }
+                Ok((400, body)) => {
+                    // Refused for good (too large, or malformed): this copy now differs from
+                    // everyone else's, so start again from the file.
+                    let why = body.get("error").and_then(Json::as_str).unwrap_or("it was refused").to_string();
+                    self.event(Event::Notice(format!("An edit couldn't be shared: {why}"), true));
+                    self.event(Event::Rejoin);
+                    return false;
+                }
+                // Offline or a hiccup: the server recognises a retried edit.
+                _ => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    return !link(&self.link).stop;
+                }
+            }
+        }
+    }
+
+    /// Others' edits, who's here, and where the file was last saved. `Some(true)`: more to
+    /// fetch at once; `None`: the session is over for this copy.
+    fn sync(&mut self, nc: &Connection) -> Option<bool> {
+        let selection = link(&self.link).selection.clone();
+        let sel = if selection != self.sent_selection { selection.clone() } else { String::new() };
+        let query = format!("collab/sync?sessionId={}&client={}&since={}&sel={}", self.session_id, self.client, self.last_seq, encode(&sel));
+        match nc.app_status("GET", &query, &Json::Null) {
+            Ok((200..=299, r)) => {
+                if r.get("rejoin").and_then(Json::as_bool) == Some(true) {
+                    self.event(Event::Rejoin);
+                    return None;
+                }
+                if !sel.is_empty() {
+                    self.sent_selection = selection;
+                }
+                let new = entries(r.get("entries"));
+                let more = !new.is_empty();
+                if let Some(last) = new.last() {
+                    self.last_seq = last.seq;
+                }
+                let mut l = link(&self.link);
+                l.entries.extend(new);
+                l.members = r.get("members").cloned().and_then(|m| serde_json::from_value(m).ok());
+                let seq = r.get("checkpointSeq").and_then(Json::as_u64).unwrap_or(0);
+                if seq > l.checkpoint_seq {
+                    l.checkpoint_seq = seq;
+                }
+                if let Some(etag) = r.get("checkpointEtag").and_then(Json::as_str).filter(|e| !e.is_empty() && *e != l.checkpoint_etag) {
+                    l.checkpoint_etag = etag.to_string();
+                    let etag = etag.to_string();
+                    drop(l);
+                    self.settle(&etag);
+                }
+                self.ctx.request_repaint();
+                Some(more)
+            }
+            Ok((409, body)) => {
+                self.event(if outdated(&body) { Event::End(OUTDATED_NOW.into()) } else { Event::Rejoin });
+                None
+            }
+            _ => Some(false),
+        }
+    }
+
+    /// The local copy's record follows the session's saves: once sharing ends, opening the file
+    /// again fetches Nextcloud's version rather than sending this copy.
+    fn settle(&self, etag: &str) {
+        let mut s = lock(&self.state);
+        if let Some(key) = tie_key(&s.stored.files, &self.local)
+            && let Some(t) = s.stored.files.get_mut(&key)
+        {
+            t.etag = Some(format!("\"{etag}\""));
+            t.synced = mtime(std::path::Path::new(&key));
+            persist(&mut s);
+        }
+    }
+
+    /// Saves the shared presentation to the file, with its state snapshot. False when the
+    /// session can't go on.
+    fn checkpoint(&mut self, nc: &Connection, job: Job) -> bool {
+        let before = link(&self.link).checkpoint_etag.clone();
+        let encode = |format: &str| deckcraft_engine::cmd::file::save_bytes(&job.doc, format).map_err(|e| e.to_string());
+        let saved = encode(job.format).and_then(|bytes| encode("deckcraft").map(|native| (bytes, deckcraft_engine::cmd::base64_encode(&native))));
+        let (bytes, state) = match saved {
+            Ok(b) => b,
+            Err(e) => {
+                self.event(Event::Notice(format!("Couldn't save the shared presentation: {e}"), true));
+                return true;
+            }
+        };
+        let headers = [("If-Match", format!("\"{before}\"")), ("Content-Type", "application/octet-stream".to_string())];
+        let r = match nc.send("PUT", &nc.dav(&self.remote), &headers, bytes) {
+            Ok(r) => r,
+            Err(_) => return true,
+        };
+        if r.status == 412 {
+            // Someone else in the session saved first (fine), or the file changed outside it.
+            let _ = self.sync(nc);
+            if link(&self.link).checkpoint_etag != before {
+                return true;
+            }
+            self.event(Event::End(
+                "The file was changed outside this editing session in Nextcloud. Open it again to see it; edits since the last save weren't written to it.".into(),
+            ));
+            return false;
+        }
+        if !(200..300).contains(&r.status) {
+            return true;
+        }
+        let etag = r.etag.as_deref().unwrap_or("").trim_start_matches("W/").trim_matches('"').to_string();
+        let body = json!({"sessionId": self.session_id, "client": self.client, "seq": job.seq, "etag": etag, "state": state});
+        if nc.app_status("POST", "collab/checkpoint", &body).is_ok_and(|(s, _)| (200..300).contains(&s)) {
+            let mut l = link(&self.link);
+            l.checkpoint_seq = l.checkpoint_seq.max(job.seq);
+            l.checkpoint_etag = etag.clone();
+            drop(l);
+            self.settle(&etag);
+            self.event(Event::Saved(job.seq));
+        }
+        true
+    }
+}
+
+/// A 409 that says a newer SlideLogic is in the session: rejoining wouldn't help.
+fn outdated(body: &Json) -> bool {
+    body.get("outdated").and_then(Json::as_bool) == Some(true)
+}
+
+/// The members other than `me` whose place reads, for [`deckcraft_engine::Session::collab_set_others`].
+fn others(members: &[Member], me: u64) -> Vec<Other> {
+    members.iter().filter(|m| m.client != me && m.recent).filter_map(Member::other).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entries_read_like_the_page_does() {
+        let e = entries(Some(&json!([
+            {"seq": 4, "client": 2, "client_seq": 1, "base": 3, "op": "{}"},
+            {"seq": 5, "client": 3, "client_seq": 1, "base": 4, "op": "not json"},
+            {"client": 3}
+        ])));
+        assert_eq!(e.len(), 2, "an entry without a position is dropped");
+        assert_eq!(e[1].op, Op::default(), "an op that doesn't parse is a no-op");
+    }
+
+    #[test]
+    fn members_read_like_the_server_lists_them() {
+        let m: Vec<Member> =
+            serde_json::from_value(json!([{"client": 2, "userId": "ana", "displayName": "", "selection": "{}", "canEdit": false}, {"client": 3, "userId": "bo", "displayName": "Bo Lee"}]))
+                .unwrap();
+        assert_eq!((m[0].name(), m[0].can_edit), ("ana", false));
+        assert_eq!((m[1].name(), m[1].can_edit), ("Bo Lee", true));
+    }
+
+    #[test]
+    fn the_others_are_drawn_from_their_places() {
+        let at = |slide: u32| json!({"slide": slide, "shapes": [7, 9]}).to_string();
+        let m: Vec<Member> = serde_json::from_value(json!([
+            {"client": 1, "userId": "me", "selection": at(1)},
+            {"client": 2, "userId": "ana", "displayName": "Ana Lopez", "selection": at(4)},
+            {"client": 3, "userId": "bo", "selection": "garbled"},
+            {"client": 4, "userId": "cy", "selection": "{\"slide\": null}"},
+            {"client": 5, "userId": "di", "selection": at(2), "recent": false}
+        ]))
+        .unwrap();
+        let o = others(&m, 1);
+        assert_eq!(o.len(), 2, "not me, only who sent a place that reads, and not who stopped showing up");
+        assert_eq!(
+            (o[0].client, o[0].name.as_str(), o[0].slide, o[0].shapes.clone()),
+            (2, "Ana Lopez", Some(SlideId(4)), vec![ShapeId(7), ShapeId(9)])
+        );
+        assert_eq!(o[0].color, [0x1F, 0x6F, 0xB2], "the page's colour for client 2");
+        assert_eq!((o[1].client, o[1].slide), (4, None), "in a master view: no slide");
+        assert_eq!(color_for(9), color_for(1), "the colours go round");
+        assert_eq!(format_of("Talks/a.PPSX"), "ppsx");
+        assert_eq!(format_of("a.pptx"), "pptx");
+    }
+}
