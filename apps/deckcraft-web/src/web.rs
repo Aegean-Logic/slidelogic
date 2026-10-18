@@ -48,6 +48,9 @@ pub fn start() {
                     let mut services = services(inbox.clone(), cc.egui_ctx.clone());
                     if let Some(bridge) = &app_bridge {
                         bridge.connect(&mut services, cc.egui_ctx.clone());
+                        if query_param("desktop").as_deref() == Some("1") {
+                            bridge.offer_desktop(&mut services);
+                        }
                     }
                     let mut app = SlideApp::new(Session::new(), services);
                     let q = query();

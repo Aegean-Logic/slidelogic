@@ -120,8 +120,9 @@ doesn't know the flag answers `deckcraft:ready` without `ack: true`.
 
 Several people can edit one presentation at once (`docs/co-editing.md`). The page runs the session
 with a server that numbers everyone's edits (for Nextcloud, `../deckcraft-nextcloud`); SlideLogic
-does all the merging. `deckcraft:ready` says `collab: true` when the build can co-edit. The
-messages follow WordLogic's, with the `deckcraft:` prefix:
+does all the merging. `deckcraft:ready` says `collab: n` when the build can co-edit, `n` being
+its co-editing protocol (`collab::PROTOCOL`: what its edits mean; the page joins with it, so a
+session keeps to one). The messages follow WordLogic's, with the `deckcraft:` prefix:
 
 | Message | Direction | Fields |
 |---|---|---|
@@ -139,6 +140,32 @@ While shared, Undo and Redo take back only this person's own edits, and a view-o
 edits are refused with a message. Co-editing messages are handled as they arrive, not at the next
 frame, so a tab in the background keeps up and answers checkpoint requests. Log batches, snapshots
 and presence lists are limited to 512 MB of text each.
+
+## Sharing
+
+With `?host=parent`, the title bar's Share button opens a Share dialog like PowerPoint's with
+OneDrive (people with Can edit or Can view and a message, Copy link with the link's permission
+in plain sight, link settings, who has access), and the page carries out its requests with the
+user's own session (for Nextcloud, `../deckcraft-nextcloud/src/share.js`). Right-clicking Share
+exports a copy instead; without a page to ask, Share opens File › Export.
+
+| Message | Direction | Fields |
+|---|---|---|
+| `deckcraft:cloud` | to the page | `id`, `op`, `params` (JSON text): one of the dialog's operations (`crates/ui-egui/src/share.rs` lists them) |
+| `deckcraft:cloud:reply` | from the page | `id`, `ok`; `json` (the answer, JSON text, at most 4 MB) when `ok`, else `error` |
+
+A guest who opened a shared link gets Copy link for that link (`share.info` answers `link` and
+`canShare: false`).
+
+## Open in Desktop App
+
+With `&desktop=1`, the title bar offers Open in Desktop App; choosing it sends
+`deckcraft:openDesktop` (no fields) to the page, which opens the presentation in the SlideLogic
+desktop app. For Nextcloud that's a `slidelogic://open?server=…&path=…` link: the desktop app
+signs in to that server first if it needs to (Login Flow), then joins the same co-editing session.
+The Windows installer and the Linux packages register the scheme
+(`packaging/windows/deckcraft.wxs`, `packaging/linux/uk.co.aegeanlogic.slidelogic.links.desktop`);
+macOS doesn't handle it yet. Each link opens its own window.
 
 ## Renderer selection and fallback flags
 
