@@ -10,6 +10,10 @@
 - **Edits:** every edit, from the ribbon, keys, pointer gestures or agents, shows in the others'
   copies within about a second: new, deleted and moved slides, shapes, formatting, text,
   transitions and animations, design changes.
+- **Typing together:** several people can type in the same text box at once and all keep what
+  they typed; one bolding words while another colours them keeps both; someone moving or
+  restyling a box while another types in it keeps both. Each person's caret stays with their
+  own text, and each stays on their slide when others add or remove slides in front of it.
 - **Presence:** the shapes each person has selected are outlined on the slide in their colour
   with their name; their initials show on the thumbnail of the slide they're on; a strip above
   the editor lists who's editing.
@@ -107,6 +111,17 @@ An op (`collab::Op`) is the **result** of a local command, not the command:
    background, transition, animations, notes, comments…) one by one, and its top-level shapes by
    `ShapeId`, added or replaced whole (a group with everything in it). A changed master (theme,
    layouts and all) is replaced whole.
+   - **Text inside a top-level shape** travels as an edit of its own (`collab/text.rs`, ported
+     from WordLogic's stories): the paragraphs read as a flat sequence of characters (each with
+     its run's formatting), breaks, fields and equations as one unit each, and a mark ending
+     every paragraph with its settings. The edit keeps, inserts, deletes, and patches run
+     formatting or a paragraph's settings, formatting as JSON maps of only the keys that
+     changed; concurrent edits are transformed against each other as WordLogic's are. A shape
+     whose other settings changed too is sent with its text as it was before, beside the text's
+     edit, so the two merge with someone else's typing in either order. Applying rebuilds only
+     the paragraphs an edit reaches; where that wouldn't give back the author's paragraphs
+     exactly (runs the model keeps apart though they look alike), the shape is sent whole as
+     before (`ShapesPatch::whole`).
 3. **Presentation settings** (slide size, notes and handout masters, sections, custom shows, show
    settings, header and footer, properties, embedded fonts, table styles…) each replaced whole.
 4. **Media** by `MediaId`: new or changed items travel with the op, as base64; a removal applies
@@ -149,8 +164,13 @@ transitions and design changes are all results.
   retry forever.
 
 Known limits, accepted for now:
-- One person typing in a text box while another changes the same shape: the later change wins
-  the whole shape. Text merging inside a shape is phase 4.
+- Text merges in top-level shapes only. Text in a shape inside a group, in a table cell, or in
+  the speaker notes is still replaced whole by the later change, and so is a shape whose text
+  couldn't travel as an edit (above). Two people changing the same setting of one shape (both
+  moving it) still take the later change.
+- Copies on different builds in one session would read text edits differently: a build from
+  before text merging ignores them. The editor page loads the build of the installed app, so
+  this only lasts while an upgrade is under way.
 - Two people changing one master (or adding layouts to it) at once: the later master wins whole;
   a slide on a layout that went takes the first layout.
 - The diff can't tell which of two swapped neighbours was the one dragged: moving slide 1 below
@@ -187,13 +207,15 @@ Known limits, accepted for now:
 3. **Done (2026-10-18)**, but for the desktop app: own-edit undo through the session, view-only
    members, checkpoints written by one member, shared links (files and folders). Still to do:
    the desktop app joining the same session (GridLogic's and WordLogic's `nextcloud/coedit.rs`).
-4. Text merging inside one shape (WordLogic's flat sequence); per-shape merging inside masters
-   and layouts; per-property merging of one shape; a WebSocket transport.
+4. **Started (2026-10-18):** text merging inside one top-level shape. Still to do: text in
+   groups, table cells and notes; per-shape merging inside masters and layouts; per-property
+   merging of one shape; a WebSocket transport.
 
 ## Revision history
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | Text merging inside one shape: typing together, formatting and typing, a move and typing; carets and the current slide follow others' edits |
 | 2026-10-18 | Shared links (files, folders) and a read-only user share checked end to end; a background tab no longer crashes before its first frame; view-only refusals read plainly and fit the status bar |
 | 2026-10-18 | Phases 2–3 built: session hook, presence, web bridge, Nextcloud sequencer; checked end to end; status, joining, limits and phases updated |
 | 2026-10-18 | Phase 1 built: `collab` module, replica, ids, fuzz; status, decisions, limits and phases updated |
