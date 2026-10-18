@@ -24,7 +24,8 @@
 //!
 //! Co-editing (the page runs the session with the server; [`collab_msg`] checks what it sends):
 //!
-//! - `deckcraft:ready` says `{ collab: true }`: this build can co-edit.
+//! - `deckcraft:ready` says `{ collab: n }`: this build can co-edit, with ops as
+//!   `collab::PROTOCOL` n means them (the page joins with it: a session keeps to one).
 //! - `deckcraft:collab:start` (from the parent): `{ client (or clientId), seq, readOnly?, user?,
 //!   color?, state? }`, after `deckcraft:open`: the presentation just opened is the shared one as
 //!   of log position `seq`. With `state` (a checkpoint's snapshot, `Session::collab_load_snapshot`)
@@ -184,7 +185,8 @@ impl Bridge {
             ("type", "deckcraft:ready".into()),
             ("version", env!("CARGO_PKG_VERSION").into()),
             ("ack", self.acks.is_some().into()),
-            ("collab", true.into()),
+            // The co-editing protocol (truthy for pages that only ask whether it co-edits).
+            ("collab", JsValue::from_f64(f64::from(deckcraft_engine::collab::PROTOCOL))),
         ]);
     }
 
