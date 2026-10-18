@@ -19,6 +19,7 @@
 mod replica;
 mod seq;
 mod shared;
+pub mod text;
 
 pub use replica::{Incoming, Outgoing, Replica, Shown};
 pub use seq::SeqEdit;
@@ -50,15 +51,32 @@ const MAX_ORDER_WORK: usize = 500_000_000;
 pub struct ShapesPatch {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub edits: Vec<SeqEdit<ShapeId>>,
-    /// New shapes (an insert names them) and changed ones, top-level shapes whole.
+    /// New shapes (an insert names them) and changed ones, top-level shapes whole. A changed
+    /// shape whose text changed too carries its text as it was before, and the change to it goes
+    /// in `text`, so someone typing in it at the same time keeps what they typed. Those in
+    /// `whole` carry their new text instead (an edit `text` couldn't say exactly).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub put: Vec<Shape>,
+    /// Edits of the text of top-level shapes both copies have.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub text: Vec<TextEdit>,
+    /// Shapes in `put` whose text travels whole, new.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub whole: Vec<ShapeId>,
 }
 
 impl ShapesPatch {
     pub fn is_empty(&self) -> bool {
-        self.edits.is_empty() && self.put.is_empty()
+        self.edits.is_empty() && self.put.is_empty() && self.text.is_empty()
     }
+}
+
+/// An edit of one shape's text ([`text::Delta`] over its paragraphs).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextEdit {
+    pub id: ShapeId,
+    pub delta: text::Delta,
 }
 
 /// What changed on a slide both copies have.
@@ -172,7 +190,12 @@ impl Op {
 
     /// Edits, items and settings in the op, for the size cap.
     fn items(&self) -> usize {
-        let shapes: usize = self.slides.changed.iter().map(|c| c.fields.len() + c.shapes.edits.len() + c.shapes.put.len()).sum();
+        let shapes: usize = self
+            .slides
+            .changed
+            .iter()
+            .map(|c| c.fields.len() + c.shapes.edits.len() + c.shapes.put.len() + c.shapes.text.iter().map(|t| 1 + t.delta.len()).sum::<usize>())
+            .sum();
         self.fields.len()
             + self.masters.edits.len()
             + self.masters.put.len()
@@ -322,8 +345,55 @@ fn capture_shapes(before: &[Shape], after: &[Shape]) -> Result<ShapesPatch> {
     let ids = |v: &[Shape]| v.iter().map(|s| s.id).collect::<Vec<_>>();
     let edits = seq::diff(&ids(before), &ids(after)).ok_or_else(|| refused("two shapes on a slide share an id"))?;
     let old: HashMap<ShapeId, &Shape> = before.iter().map(|s| (s.id, s)).collect();
-    let put = after.iter().filter(|s| old.get(&s.id).is_none_or(|o| !same(*o, *s))).cloned().collect();
-    Ok(ShapesPatch { edits, put })
+    let mut patch = ShapesPatch { edits, ..ShapesPatch::default() };
+    for s in after {
+        match old.get(&s.id) {
+            None => patch.put.push(s.clone()),
+            Some(o) if same(*o, s) => {}
+            Some(o) => match text_change(o, s) {
+                Some((rest_changed, delta)) => {
+                    if rest_changed {
+                        // As it was before, text-wise: the text's change travels on its own.
+                        let mut put = s.clone();
+                        if let (Some(t), Some(old)) = (put.text.as_mut(), o.text.as_ref()) {
+                            t.paragraphs = old.paragraphs.clone();
+                        }
+                        patch.put.push(put);
+                    }
+                    if let Some(delta) = delta {
+                        patch.text.push(TextEdit { id: s.id, delta });
+                    }
+                }
+                None => {
+                    patch.put.push(s.clone());
+                    patch.whole.push(s.id);
+                }
+            },
+        }
+    }
+    Ok(patch)
+}
+
+/// How the shape `o` became `s` when both have text: whether anything besides the paragraphs
+/// changed, and the paragraphs' edit if they did. `None`: send the shape whole (no text on one
+/// side, or an edit that wouldn't give back exactly `s`'s paragraphs).
+fn text_change(o: &Shape, s: &Shape) -> Option<(bool, Option<text::Delta>)> {
+    let (Some(ot), Some(st)) = (&o.text, &s.text) else { return None };
+    let bare = |sh: &Shape| {
+        let mut sh = sh.clone();
+        if let Some(t) = sh.text.as_mut() {
+            t.paragraphs.clear();
+        }
+        sh
+    };
+    let rest_changed = !same(&bare(o), &bare(s));
+    if same(&ot.paragraphs, &st.paragraphs) {
+        return Some((rest_changed, None));
+    }
+    let delta = text::diff(&ot.paragraphs, &st.paragraphs).ok()?;
+    let mut check = ot.paragraphs.clone();
+    text::apply(&mut check, &delta).ok()?;
+    (check == st.paragraphs).then_some((rest_changed, Some(delta)))
 }
 
 /// Applies `op` to `p`. On an error `p` may be half changed: apply to a copy. Every copy refuses
@@ -372,6 +442,12 @@ pub fn apply(p: &mut Presentation, op: &Op) -> Result<()> {
         for sh in put.iter().filter(|sh| !inserted.contains(&sh.id)) {
             if let Some(x) = s.shapes.iter_mut().find(|x| x.id == sh.id) {
                 *x = sh.clone();
+            }
+        }
+        for t in &change.shapes.text {
+            // A shape someone removed (or whose text went) meanwhile: its text edit goes with it.
+            if let Some(body) = s.shapes.iter_mut().find(|x| x.id == t.id).and_then(|x| x.text.as_mut()) {
+                text::apply(&mut body.paragraphs, &t.delta)?;
             }
         }
         if !change.shapes.is_empty() {
@@ -493,13 +569,43 @@ fn rebase_shapes(a: &ShapesPatch, b: &ShapesPatch, a_first: bool) -> ShapesPatch
     let edits = seq::rebase(&a.edits, &b.edits, a_first);
     let kept = inserts(&edits);
     let dropped: HashSet<ShapeId> = inserts(&a.edits).difference(&kept).copied().collect();
-    let put = a
+    let their_text: HashMap<ShapeId, &text::Delta> = b.text.iter().map(|t| (t.id, &t.delta)).collect();
+    let their_whole: HashSet<ShapeId> = b.whole.iter().copied().collect();
+    let mine_whole: HashSet<ShapeId> = a.whole.iter().copied().collect();
+    let put: Vec<Shape> = a
         .put
         .iter()
         .filter(|s| !dropped.contains(&s.id) && (kept.contains(&s.id) || !(gone.contains(&s.id) || (a_first && theirs.contains(&s.id)))))
-        .cloned()
+        .map(|s| {
+            // A shape put with its text as it was: with `b`'s typing in that text, so putting it
+            // after `b` doesn't take `b`'s typing back.
+            let mut s = s.clone();
+            if !mine_whole.contains(&s.id)
+                && let Some(d) = their_text.get(&s.id)
+                && let Some(t) = s.text.as_mut()
+            {
+                let mut paras = t.paragraphs.clone();
+                if text::apply(&mut paras, d).is_ok() {
+                    t.paragraphs = paras;
+                }
+            }
+            s
+        })
         .collect();
-    ShapesPatch { edits, put }
+    let kept_puts: HashSet<ShapeId> = put.iter().map(|s| s.id).collect();
+    let whole = a.whole.iter().copied().filter(|id| kept_puts.contains(id)).collect();
+    let text = a
+        .text
+        .iter()
+        // A shape `b` removed, or whose text `b` replaced whole: the edit no longer fits.
+        .filter(|t| !gone.contains(&t.id) && !their_whole.contains(&t.id))
+        .map(|t| match their_text.get(&t.id) {
+            Some(d) => TextEdit { id: t.id, delta: text::transform(&t.delta, d, a_first) },
+            None => t.clone(),
+        })
+        .filter(|t| !t.delta.is_noop())
+        .collect();
+    ShapesPatch { edits, put, text, whole }
 }
 
 fn removals<I: Copy + Eq + std::hash::Hash>(edits: &[SeqEdit<I>]) -> HashSet<I> {

@@ -63,6 +63,35 @@ impl Other {
     }
 }
 
+/// Keeps this person where they were through someone else's edit `op`, which turned `before`
+/// into what `st` shows: on the same slide (others may have added or removed slides in front of
+/// it), and with the caret on the same text in a text box someone else typed in too.
+fn follow_view(st: &mut DocState, before: &Presentation, op: Option<&super::Op>) {
+    if st.selection.target != Target::Slides {
+        return;
+    }
+    let Some(slide) = before.slides.get(st.selection.slide).map(|s| s.id) else { return };
+    if let Some(i) = st.doc.slide_index(slide) {
+        st.selection.slide = i;
+    }
+    let Some(op) = op else { return };
+    let Some(ts) = st.selection.text.as_mut() else { return };
+    if ts.notes || ts.cell.is_some() {
+        return;
+    }
+    let Some(delta) =
+        op.slides.changed.iter().find(|c| c.id == slide).and_then(|c| c.shapes.text.iter().find(|t| t.id == ts.shape)).map(|t| &t.delta)
+    else {
+        return;
+    };
+    let paras = |p: &Presentation| p.slide(slide).and_then(|s| s.shape(ts.shape)).and_then(|sh| sh.text.as_ref()).map(|t| t.paragraphs.clone());
+    let (Some(old), Some(new)) = (paras(before), paras(&st.doc)) else { return };
+    let map = |at: (usize, usize)| super::text::pos_at(&new, delta.map_pos(super::text::flat_pos(&old, at), true));
+    ts.anchor = map(ts.anchor);
+    ts.caret = map(ts.caret);
+    ts.line_end = None;
+}
+
 fn top_of(st: &DocState) -> Option<usize> {
     st.history.undo.last().map(|e| Arc::as_ptr(&e.doc) as usize)
 }
@@ -212,7 +241,16 @@ impl Session {
         let Some(st) = self.docs.iter_mut().find(|d| d.uid == c.uid) else {
             return Err(EngineError::Other("co-editing: the shared presentation was closed".into()));
         };
+        let before = st.doc.clone();
         let shown = c.replica.receive(msg, &mut st.doc)?;
+        follow_view(
+            st,
+            &before,
+            match &shown {
+                Shown::Applied(op) | Shown::Rebuilt(op) => Some(op),
+                Shown::Same => None,
+            },
+        );
         match &shown {
             Shown::Same => {}
             Shown::Applied(op) => {
