@@ -335,6 +335,7 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
                 let i = (at + k).min(doc.slides.len());
                 doc.slides.insert(i, Arc::new(sl));
             }
+            super::slide::tidy_sections(doc);
             sel.slide = (at + new_ids.len()).saturating_sub(1).min(doc.slides.len().saturating_sub(1));
             sel.slides = new_ids.clone();
             sel.shapes.clear();

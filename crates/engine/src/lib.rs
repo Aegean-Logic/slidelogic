@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cmd;
+pub mod collab;
 pub mod compare;
 pub mod connect;
 pub mod drawtable;

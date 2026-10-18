@@ -627,8 +627,43 @@ fn from_outline(s: &mut Session, p: &Value) -> Result<Value> {
         for (k, sl) in new.into_iter().enumerate() {
             doc.slides.insert(at + k, sl);
         }
+        tidy_sections(doc);
         Ok(json!({"slides": n}))
     })
+}
+
+/// Keeps sections covering every slide once: ids of slides that are gone (or listed twice) go,
+/// and a slide in no section joins the section of the slide before it, right after that slide
+/// (the first section for the first slide). Nothing changes without sections.
+pub(crate) fn tidy_sections(doc: &mut Presentation) {
+    if doc.sections.is_empty() {
+        return;
+    }
+    let order: Vec<SlideId> = doc.slides.iter().map(|s| s.id).collect();
+    let exists: std::collections::HashSet<SlideId> = order.iter().copied().collect();
+    let mut seen = std::collections::HashSet::new();
+    for sec in &mut doc.sections {
+        if sec.slides.iter().any(|id| !exists.contains(id) || seen.contains(id)) {
+            sec.slides.retain(|id| exists.contains(id) && !seen.contains(id));
+        }
+        seen.extend(sec.slides.iter().copied());
+    }
+    for (i, id) in order.iter().enumerate() {
+        if seen.contains(id) {
+            continue;
+        }
+        let prev = i.checked_sub(1).and_then(|j| order.get(j));
+        let at = prev.and_then(|pid| doc.sections.iter_mut().find_map(|sec| sec.slides.iter().position(|x| x == pid).map(|k| (sec, k + 1))));
+        match at {
+            Some((sec, k)) => sec.slides.insert(k, *id),
+            None => {
+                if let Some(sec) = doc.sections.first_mut() {
+                    sec.slides.insert(0, *id);
+                }
+            }
+        }
+        seen.insert(*id);
+    }
 }
 
 #[cfg(test)]
@@ -636,6 +671,38 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    /// Every slide sits in exactly one section, and `slide` in the same one as `neighbour`.
+    fn assert_sectioned(s: &Session, slide: usize, neighbour: usize) {
+        let doc = &s.doc().expect("doc").doc;
+        let mut listed: Vec<_> = doc.sections.iter().flat_map(|sec| sec.slides.iter().copied()).collect();
+        listed.sort();
+        listed.dedup();
+        assert_eq!(listed.len(), doc.slides.len(), "every slide in one section");
+        let id = |i: usize| doc.slides.get(i).expect("slide").id;
+        assert_eq!(doc.section_of(id(slide)), doc.section_of(id(neighbour)));
+    }
+
+    #[test]
+    fn pasted_slides_join_the_section_they_land_in() {
+        let mut s = Session::new();
+        crate::sample::open_sample(&mut s).expect("sample");
+        assert!(!s.doc().expect("doc").doc.sections.is_empty(), "the sample has sections");
+        s.execute("slide.go", &json!({"index": 1})).expect("go to");
+        s.execute("edit.copy", &json!({"scope": "slides"})).expect("copy");
+        s.execute("edit.paste", &json!({"scope": "slides"})).expect("paste");
+        assert_sectioned(&s, 2, 1);
+    }
+
+    #[test]
+    fn slides_from_an_outline_join_the_section_they_land_in() {
+        let mut s = Session::new();
+        crate::sample::open_sample(&mut s).expect("sample");
+        s.execute("slide.go", &json!({"index": 1})).expect("go to");
+        s.execute("slide.fromOutline", &json!({"text": "One\nTwo"})).expect("outline");
+        assert_sectioned(&s, 2, 1);
+        assert_sectioned(&s, 3, 1);
+    }
 
     #[test]
     fn duplicate_keeps_section_order_in_step_with_slides() {
