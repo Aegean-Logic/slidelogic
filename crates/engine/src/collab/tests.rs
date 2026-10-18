@@ -569,6 +569,81 @@ fn bold_and_typing_in_the_same_words_both_stay() {
 }
 
 #[test]
+fn typing_in_one_table_at_once_keeps_both() {
+    let mut server = Server::default();
+    let mut all = people(2);
+    go_to(&mut all[0], 0);
+    go_to(&mut all[1], 0);
+    all[0].run("insert.table", &json!({"rows": 2, "cols": 2}));
+    settle(&mut server, &mut all);
+    let id = all[0].doc().slides[0].shapes.last().unwrap().id;
+    let cell = |p: &Person, r: usize, c: usize| match &p.doc().slides[0].shape(id).unwrap().kind {
+        deckcraft_model::ShapeKind::Table(t) => t.rows[r].cells[c].text.text(),
+        _ => String::new(),
+    };
+    // Different cells, and then the same cell, at the same time.
+    all[0].run("text.edit", &json!({"id": id.0, "cell": [0, 0]}));
+    all[1].run("text.edit", &json!({"id": id.0, "cell": [1, 1]}));
+    all[0].run("text.insert", &json!({"text": "Ann"}));
+    all[1].run("text.insert", &json!({"text": "Bob"}));
+    settle(&mut server, &mut all);
+    assert_same(&all, "two cells");
+    assert_eq!((cell(&all[0], 0, 0), cell(&all[0], 1, 1)), ("Ann".to_string(), "Bob".to_string()));
+    all[1].run("text.edit", &json!({"id": id.0, "cell": [0, 0], "at": [0, 0]}));
+    all[0].run("text.insert", &json!({"text": " here"}));
+    all[1].run("text.insert", &json!({"text": "Bob and "}));
+    settle(&mut server, &mut all);
+    assert_same(&all, "one cell");
+    assert_eq!(cell(&all[1], 0, 0), "Bob and Ann here");
+}
+
+#[test]
+fn typing_in_the_notes_at_once_keeps_both() {
+    let mut server = Server::default();
+    let mut all = people(2);
+    go_to(&mut all[0], 0);
+    go_to(&mut all[1], 0);
+    let was = all[0].doc().slides[0].notes.text();
+    all[0].run("text.edit", &json!({"notes": true, "end": true}));
+    all[1].run("text.edit", &json!({"notes": true}));
+    all[1].run("text.move", &json!({"to": "start"}));
+    all[0].run("text.insert", &json!({"text": " (Ann)"}));
+    all[1].run("text.insert", &json!({"text": "Bob: "}));
+    settle(&mut server, &mut all);
+    assert_same(&all, "notes");
+    assert_eq!(all[0].doc().slides[0].notes.text(), format!("Bob: {was} (Ann)"));
+    // Carets stayed with their own text.
+    all[0].run("text.insert", &json!({"text": "!"}));
+    settle(&mut server, &mut all);
+    assert!(all[1].doc().slides[0].notes.text().ends_with(" (Ann)!"));
+}
+
+#[test]
+fn typing_in_a_grouped_shape_while_the_group_moves_keeps_both() {
+    let mut server = Server::default();
+    let mut all = people(2);
+    go_to(&mut all[0], 0);
+    go_to(&mut all[1], 0);
+    let ids: Vec<u32> = shapes_on(&all[0], 0).iter().take(2).map(|s| s.id.0).collect();
+    all[0].run("arrange.group", &json!({"ids": ids}));
+    settle(&mut server, &mut all);
+    let group = shapes_on(&all[0], 0).into_iter().find(|s| s.is_group()).unwrap().id;
+    let inner = ShapeId(ids[0]);
+    let text = |p: &Person| {
+        deckcraft_model::find_shape(&p.doc().slides[0].shapes, inner).and_then(|s| s.text.as_ref()).map(|t| t.text()).unwrap_or_default()
+    };
+    let was = text(&all[0]);
+    all[0].run("shape.move", &json!({"ids": [group.0], "dx": 30, "dy": 0}));
+    let moved = all[0].doc().slides[0].shape(group).unwrap().xfrm;
+    all[1].run("text.edit", &json!({"id": inner.0, "end": true}));
+    all[1].run("text.insert", &json!({"text": " (grouped)"}));
+    settle(&mut server, &mut all);
+    assert_same(&all, "group moved, child typed in");
+    assert_eq!(text(&all[0]), format!("{was} (grouped)"));
+    assert_eq!(all[1].doc().slides[0].shape(group).unwrap().xfrm, moved);
+}
+
+#[test]
 fn you_stay_on_your_slide_when_someone_adds_one_in_front() {
     let mut server = Server::default();
     let mut all = people(2);
@@ -711,6 +786,7 @@ const COMMON: &[&str] = &[
     "arrange.bringToFront",
     "arrange.sendToBack",
     "arrange.group",
+    "insert.table",
     "edit.undo",
     "edit.redo",
 ];
@@ -751,17 +827,35 @@ fn fuzz(seed: u64, steps: usize, n: u64) {
                     if r.below(2) == 0 {
                         go_to(&mut all[who], 0);
                     }
-                    let texts: Vec<(u32, usize)> = all[who]
-                        .s
-                        .doc()
-                        .map(|d| d.shapes().iter().filter_map(|s| s.text.as_ref().map(|t| (s.id.0, t.paragraphs.len()))).collect())
-                        .unwrap_or_default();
-                    if let Some(&(shape, paras)) = r.pick(&texts)
-                        && all[who].s.doc().is_ok_and(|d| d.selection.text.as_ref().is_none_or(|t| t.shape.0 != shape))
-                    {
-                        let at = json!([r.below(paras.max(1)), r.below(12)]);
-                        let _ = all[who].s.execute("text.edit", &json!({"id": shape, "at": at}));
-                        log.push_back(format!("{} edits text of {shape} at {at}", who + 1));
+                    // Every place there's text: shapes' own (in groups too), table cells, notes.
+                    let mut texts: Vec<Value> = vec![json!({"notes": true})];
+                    if let Ok(d) = all[who].s.doc() {
+                        deckcraft_model::walk(d.shapes(), &mut |s, _| {
+                            if let Some(t) = &s.text {
+                                texts.push(json!({"id": s.id.0, "paras": t.paragraphs.len()}));
+                            }
+                            if let deckcraft_model::ShapeKind::Table(t) = &s.kind {
+                                for (row, cells) in t.rows.iter().enumerate() {
+                                    for col in 0..cells.cells.len() {
+                                        texts.push(json!({"id": s.id.0, "cell": [row, col]}));
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    if let Some(target) = r.pick(&texts).cloned() {
+                        let mut p = target.clone();
+                        if let Some(paras) = target.get("paras").and_then(Value::as_u64) {
+                            p["at"] = json!([r.below((paras as usize).max(1)), r.below(12)]);
+                        }
+                        if let Some(o) = p.as_object_mut() {
+                            o.remove("paras");
+                        }
+                        let _ = all[who].s.execute("text.edit", &p);
+                        if r.below(2) == 0 {
+                            let _ = all[who].s.execute("text.move", &json!({"to": "start"}));
+                        }
+                        log.push_back(format!("{} edits text {p}", who + 1));
                     }
                     match r.below(6) {
                         0 => ("text.delete", json!({"dir": if r.below(2) == 0 { "backward" } else { "forward" }})),
@@ -772,7 +866,8 @@ fn fuzz(seed: u64, steps: usize, n: u64) {
                     }
                 } else {
                     let id = if r.below(2) == 0 { *r.pick(COMMON).unwrap() } else { *r.pick(&ids).unwrap() };
-                    (id, params(&mut r, &all[who].s))
+                    let p = if id == "insert.table" { json!({"rows": 1 + r.below(3), "cols": 1 + r.below(3)}) } else { params(&mut r, &all[who].s) };
+                    (id, p)
                 };
                 log.push_back(format!("{} runs {id} {p}", who + 1));
                 let before = all[who].doc().clone();
@@ -844,8 +939,10 @@ fn fuzz(seed: u64, steps: usize, n: u64) {
     assert!(edits * 10 >= steps, "only {edits} of {steps} steps edited; seed {seed}");
     let texts = server.log.iter().filter(|e| e.contains("\"text\":[{")).count();
     let whole = server.log.iter().filter(|e| e.contains("\"whole\":[")).count();
+    let cells = server.log.iter().filter(|e| e.contains("\"cell\":[")).count();
+    let notes = server.log.iter().filter(|e| e.contains("\"notes\":[")).count();
     eprintln!(
-        "collab fuzz seed {seed}: {n} people, {edits} edits, {} ops in the log ({texts} with text edits, {whole} with shapes sent whole)",
+        "collab fuzz seed {seed}: {n} people, {edits} edits, {} ops in the log ({texts} with text edits, {cells} in table cells, {notes} in notes, {whole} with shapes sent whole)",
         server.log.len()
     );
 }
