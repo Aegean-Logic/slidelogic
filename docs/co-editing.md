@@ -29,6 +29,15 @@
 - **Shared links** (`/s/{token}`, Nextcloud app 0.3.0): a link to a presentation opens it in
   SlideLogic. Edit links co-edit as guests under the name they gave Nextcloud; view-only links
   follow live. Presentations in a shared folder's link open the same way.
+- **The desktop app** edits together with the browser: File › Account signs in to Nextcloud
+  (Login Flow v2 in the browser; the app password goes to the system keychain), File › Open ›
+  Nextcloud browses its folders, and a presentation opened from there joins its session
+  (`apps/deckcraft/src/nextcloud.rs`, `nextcloud/coedit.rs`, ported from WordLogic). It works
+  on a copy in the cache folder tied to the Nextcloud file: Save As › Nextcloud and Recent go
+  through Nextcloud too, and a presentation not being co-edited is sent back on Save over the
+  version it came from (someone else's save in between asks which to keep). One presentation is
+  shared at a time; another opened from Nextcloud meanwhile is sent back on Save as above. A
+  checkpoint that holds exactly what the desktop shows marks it saved.
 
 Checked end to end in the test Nextcloud (2026-10-18): two tabs on one .pptx, then a third
 joining late from the checkpoint snapshot. New slides made in each tab, and at once in both,
@@ -177,10 +186,14 @@ Known limits, accepted for now:
   typing. Two people changing the same setting of one shape (both moving it) take the later
   change.
 - Copies on different builds in one session would read edits differently (a build from before
-  text merging ignores text edits, and could save its copy over everyone's work). So each page
-  joins with its app version, and the Nextcloud app sends any member on an older build than the
-  newest that joined to reload (deckcraft-nextcloud 0.4.0). A save the old copy had already
-  started can still land in that moment.
+  text merging ignores text edits, and could save its copy over everyone's work). So each copy
+  joins with `collab::PROTOCOL` (the browser's from `deckcraft:ready`'s `collab`), and the
+  Nextcloud app sends any member on an older one than the newest that joined back
+  (deckcraft-nextcloud 0.4.0; the protocol, not the app version, since 0.4.1): a browser tab
+  reloads, which brings the newer editor. A copy that can't get newer that way says so instead
+  of trying again: a desktop app older than the session opens the file unshared, and a page
+  older than a desktop app in the session stops after one reload. A save the old copy had
+  already started can still land in that moment.
 - Two people changing one master (or adding layouts to it) at once: the later master wins whole;
   a slide on a layout that went takes the first layout.
 - The diff can't tell which of two swapped neighbours was the one dragged: moving slide 1 below
@@ -204,6 +217,9 @@ Known limits, accepted for now:
   (scenarios and the fuzz).
 - `crates/ui-egui/src/presence.rs`: the others on the canvas and the thumbnails.
 - `apps/deckcraft-web/src/host.rs`, `collab_msg.rs`: the `deckcraft:collab:*` messages.
+- `apps/deckcraft/src/nextcloud.rs`, `nextcloud/coedit.rs`: the desktop app's Nextcloud and its
+  side of a session; `crates/ui-egui/src/cloud.rs`, `cloud_files.rs`: the File view's Nextcloud
+  places. Tested end to end against a fake Nextcloud (`nextcloud/fake_server.rs`).
 - `../deckcraft-nextcloud`: the sequencer (`CollabController`, `CollabService`, `SnapshotStore`,
   tables, clean-up job) and the page (`src/collab.js`), ported from WordLogic.
 
@@ -214,9 +230,10 @@ Known limits, accepted for now:
    presentation, .pptx round trip).
 2. **Done (2026-10-18).** The session hook, the bridge and the Nextcloud sequencer; joining from
    a checkpoint snapshot; presence (who's on which slide, others' selections).
-3. **Done (2026-10-18)**, but for the desktop app: own-edit undo through the session, view-only
-   members, checkpoints written by one member, shared links (files and folders). Still to do:
-   the desktop app joining the same session (GridLogic's and WordLogic's `nextcloud/coedit.rs`).
+3. **Done (2026-10-18).** Own-edit undo through the session, view-only members, checkpoints
+   written by one member, shared links (files and folders), and the desktop app joining the same
+   session (signed in to Nextcloud, presentations opened from the File view). Not ported from
+   WordLogic: the Share dialog, and "Open in Desktop App" links from the browser.
 4. **Started (2026-10-18):** text merging wherever text is (shapes, groups, table cells, notes).
    Still to do: table rows and columns as edits of their own (so adding a row doesn't send the
    table whole); per-shape merging inside masters and layouts; per-property merging of one
@@ -226,6 +243,7 @@ Known limits, accepted for now:
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | Phase 3 done: the desktop app signs in to Nextcloud, opens and saves presentations there, and co-edits with the browser; sessions keep to one co-editing protocol (`collab::PROTOCOL`) |
 | 2026-10-18 | Notes drafts take in others' typing and save to the slide they were written on; a session keeps to its newest build |
 | 2026-10-18 | Text merging in table cells, shapes inside groups and speaker notes, carets there following others' edits |
 | 2026-10-18 | Text merging inside one shape: typing together, formatting and typing, a move and typing; carets and the current slide follow others' edits |

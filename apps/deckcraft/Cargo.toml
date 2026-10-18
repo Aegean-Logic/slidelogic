@@ -28,6 +28,25 @@ rfd = { workspace = true }
 arboard = { workspace = true, features = ["image-data"] }
 image = { workspace = true }
 cpal = "0.16"
+# Nextcloud (`nextcloud.rs`): HTTP with rustls, on worker threads, as WordLogic's and GridLogic's
+# desktop apps. The system's own certificate store, so company and self-signed CAs it trusts work.
+ureq = { version = "3", features = ["platform-verifier"] }
+serde = { workspace = true }
+# Nextcloud folder listings (WebDAV PROPFIND answers).
+quick-xml = { workspace = true }
+
+# The Nextcloud app password, in the system's own keychain.
+[target.'cfg(target_os = "windows")'.dependencies.keyring]
+version = "3"
+features = ["windows-native"]
+
+[target.'cfg(target_os = "macos")'.dependencies.keyring]
+version = "3"
+features = ["apple-native"]
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.keyring]
+version = "3"
+features = ["async-secret-service", "async-io", "crypto-rust"]
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 winit = { version = "0.30", default-features = false, features = ["x11"] }

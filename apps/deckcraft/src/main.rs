@@ -20,17 +20,20 @@ mod display;
 #[cfg(any(target_os = "windows", test))]
 mod graphics;
 mod logging;
+mod nextcloud;
 #[cfg(not(target_arch = "wasm32"))]
 mod pasteboard;
 
 use deckcraft_engine::Session;
 use deckcraft_ui_egui::{Services, SlideApp};
 
-struct App(SlideApp);
+/// The editor, and Nextcloud (`nextcloud`): its File view places and live co-editing.
+struct App(SlideApp, nextcloud::Nextcloud);
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.0.logic(ctx);
+        self.1.poll(&mut self.0, ctx);
     }
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.0.raw_input_hook(raw);
@@ -39,6 +42,8 @@ impl eframe::App for App {
         self.0.ui(ui);
     }
     fn on_exit(&mut self) {
+        // Leave a shared presentation's session, so the others see this person go at once.
+        self.1.shutdown(&mut self.0);
         save_prefs(&self.0);
         // macOS (#279): end the process here, before eframe tears the window down. AccessKit's
         // macOS adapter subclasses the window's content view and restores its class on teardown;
@@ -67,6 +72,33 @@ fn config_dir() -> Option<std::path::PathBuf> {
     }
 }
 
+/// Where copies of Nextcloud presentations are kept: the system's cache folder, not the settings
+/// folder (which may roam between computers).
+fn cache_dir() -> Option<std::path::PathBuf> {
+    let base = if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Caches/DeckCraft"))
+    } else if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(|a| std::path::PathBuf::from(a).join("DeckCraft"))
+    } else {
+        std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+            .map(|c| c.join("deckcraft"))
+    };
+    base.map(|b| b.join("Nextcloud"))
+}
+
+/// Nextcloud: the account and the tied files in `nextcloud.json` beside the preferences, copies of
+/// Nextcloud files in the cache folder (neither with `DECKCRAFT_NO_PREFS`).
+fn nextcloud() -> nextcloud::Nextcloud {
+    let keep = std::env::var_os("DECKCRAFT_NO_PREFS").is_none();
+    nextcloud::Nextcloud::new(
+        config_dir().filter(|_| keep).map(|d| d.join("nextcloud.json")),
+        cache_dir().filter(|_| keep),
+        nextcloud::open_in_browser,
+    )
+}
+
 fn load_prefs(app: &mut SlideApp) {
     if std::env::var_os("DECKCRAFT_NO_PREFS").is_some() {
         return;
@@ -90,8 +122,9 @@ fn save_prefs(app: &SlideApp) {
     }
 }
 
-fn services() -> Services {
+fn services(cloud: deckcraft_ui_egui::cloud::Cloud) -> Services {
     Services {
+        cloud: Some(cloud),
         pick_open: Some(Box::new(|purpose: &str| {
             let d = rfd::FileDialog::new();
             let d = match purpose {
@@ -239,7 +272,9 @@ fn main() -> eframe::Result {
         "SlideLogic",
         options,
         Box::new(move |cc| {
-            let mut app = SlideApp::new(Session::new(), services());
+            // Nextcloud, as OneDrive is to PowerPoint: the File view's Nextcloud places.
+            let nextcloud = nextcloud();
+            let mut app = SlideApp::new(Session::new(), services(nextcloud.cloud()));
             load_prefs(&mut app);
             // AutoRecover: reopen what a previous run left unsaved, then keep it current.
             if std::env::var_os("DECKCRAFT_NO_RECOVERY").is_none() {
@@ -266,7 +301,7 @@ fn main() -> eframe::Result {
             if show {
                 app.start_show(0, false);
             }
-            Ok(Box::new(App(app)))
+            Ok(Box::new(App(app, nextcloud)))
         }),
     )
 }
@@ -280,7 +315,7 @@ mod tests {
     #[test]
     fn on_exit_ends_the_process_on_macos() {
         if std::env::var_os("DECKCRAFT_TEST_ON_EXIT").is_some() {
-            let mut app = App(SlideApp::new(Session::new(), Services::default()));
+            let mut app = App(SlideApp::new(Session::new(), Services::default()), nextcloud::Nextcloud::new(None, None, nextcloud::open_in_browser));
             println!("calling on_exit");
             eframe::App::on_exit(&mut app);
             println!("on_exit returned");
