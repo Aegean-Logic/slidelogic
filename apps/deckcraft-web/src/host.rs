@@ -47,6 +47,8 @@
 //!
 //! Co-editing messages are handled as they arrive, not at the next frame, so a hidden tab (which
 //! draws none) keeps up with the others and answers checkpoint requests ([`Bridge::attach`]).
+//! Not before the app's first frame, though: until then egui has no fonts, and opening the
+//! presentation would panic. A tab opened in the background joins when it's first shown.
 //!
 //! Only the parent window on the page's own origin is heard or answered. In host mode the app
 //! starts with no presentation (the page sends one), and the parent guards leaving the page.
@@ -114,6 +116,9 @@ pub struct Bridge {
     replies: Rc<RefCell<Vec<Reply>>>,
     /// The unsaved-changes state last reported to the parent.
     reported: Rc<Cell<Option<bool>>>,
+    /// The app has drawn its first frame: before it, egui has no fonts and opening a
+    /// presentation would panic, so co-editing messages wait for that frame.
+    framed: Rc<Cell<bool>>,
     /// Co-editing messages waiting for the app.
     collab: Rc<RefCell<VecDeque<collab_msg::FromPage>>>,
     /// The app, for handling co-editing messages as they arrive ([`Bridge::attach`]).
@@ -142,6 +147,7 @@ impl Bridge {
             opens: Rc::default(),
             replies: Rc::default(),
             reported: Rc::default(),
+            framed: Rc::default(),
             collab: Rc::default(),
             app: Rc::default(),
             position: Rc::default(),
@@ -195,6 +201,9 @@ impl Bridge {
     /// Co-editing messages now, if the app is free (presentations the page sent first are opened
     /// first: a session starts on the file that came just before it).
     fn sync_collab_now(&self) {
+        if !self.framed.get() {
+            return;
+        }
         let Some(app) = self.app.borrow().as_ref().and_then(Weak::upgrade) else { return };
         let Ok(mut app) = app.try_borrow_mut() else { return };
         self.open_pending(&mut app);
@@ -219,6 +228,7 @@ impl Bridge {
     /// took (without), carry co-editing on, and tell the page when unsaved changes appear or go
     /// away.
     pub fn sync(&self, app: &mut SlideApp, ctx: &egui::Context) {
+        self.framed.set(true);
         self.open_pending(app);
         self.sync_collab(app);
         if let Some(acks) = &self.acks {

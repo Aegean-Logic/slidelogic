@@ -410,7 +410,7 @@ fn a_view_only_person_cant_edit_but_follows_along() {
     let mut all = people(2);
     all[1].s.collab_set_read_only(true);
     let n = all[1].doc().slides.len();
-    assert!(matches!(all[1].s.execute("slide.new", &json!({})), Err(EngineError::Disabled(..))));
+    assert!(matches!(all[1].s.execute("slide.new", &json!({})), Err(EngineError::Other(m)) if m == READ_ONLY));
     assert_eq!(all[1].doc().slides.len(), n);
     // An edit that isn't a command (a gesture's result) is taken back with a notice.
     let before = all[1].doc().clone();

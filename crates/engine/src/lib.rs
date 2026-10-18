@@ -600,7 +600,7 @@ impl Session {
         if shared {
             self.collab_flush();
             if spec.undoable && self.collab_read_only() {
-                return Err(EngineError::Disabled(id.into(), collab::READ_ONLY.into()));
+                return Err(EngineError::Other(collab::READ_ONLY.into()));
             }
         }
         if let Err(e) = (spec.enabled)(self) {
