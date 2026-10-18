@@ -58,6 +58,10 @@ pub struct Data {
     /// App routes called without `OCS-APIRequest: true` (Nextcloud's CSRF check would refuse
     /// them).
     pub without_ocs_header: Vec<String>,
+    /// The sharing API's shares (as Nextcloud lists them: `id`, `path`, `share_type`, `share_with`,
+    /// `permissions`, `url`, `note`, `expiration`).
+    pub shares: Vec<Json>,
+    next_share: u64,
 }
 
 impl Data {
@@ -202,6 +206,10 @@ fn answer(d: &mut Data, req: &Request) -> Answer {
     if let Some(rest) = path.strip_prefix(&dav).or_else(|| (path == dav.trim_end_matches('/')).then_some("")) {
         return webdav(d, req, super::decode(rest).trim_matches('/'));
     }
+    if let Some(route) = path.strip_prefix("/ocs/v2.php/apps/files_sharing/api/v1/") {
+        let body: Json = serde_json::from_slice(&req.body).unwrap_or(Json::Null);
+        return sharing(d, &req.method, route, &query(q), &body);
+    }
     if let Some(route) = path.strip_prefix("/index.php/apps/deckcraft/collab/").filter(|_| !d.no_app) {
         if req.headers.get("ocs-apirequest").map(String::as_str) != Some("true") {
             d.without_ocs_header.push(route.to_string());
@@ -275,6 +283,48 @@ fn webdav(d: &mut Data, req: &Request, path: &str) -> Answer {
             (207, vec![("Content-Type".into(), "application/xml".into())], xml.into_bytes())
         }
         _ => (405, vec![], vec![]),
+    }
+}
+
+/// Nextcloud's sharing API, as far as the Share dialog uses it (OCS JSON: `{ocs: {meta, data}}`).
+fn sharing(d: &mut Data, method: &str, route: &str, q: &HashMap<String, String>, body: &Json) -> Answer {
+    let ok = |data: Json| json_answer(200, json!({"ocs": {"meta": {"status": "ok", "statuscode": 200, "message": "OK"}, "data": data}}));
+    let field = |k: &str| body.get(k).cloned().unwrap_or(Json::Null);
+    match (method, route) {
+        ("GET", "sharees") => {
+            ok(json!({"exact": {"users": []}, "users": [{"label": "Bo Lee", "value": {"shareType": 0, "shareWith": "bo"}}], "groups": []}))
+        }
+        ("GET", "shares") => {
+            let path = q.get("path").cloned().unwrap_or_default();
+            ok(d.shares.iter().filter(|s| s["path"] == path.as_str()).cloned().collect())
+        }
+        ("POST", "shares") => {
+            d.next_share += 1;
+            let id = d.next_share.to_string();
+            let kind = field("shareType").as_i64().unwrap_or(0);
+            let url = (kind == 3).then(|| format!("http://fake/s/link{id}"));
+            let s = json!({"id": id, "path": field("path"), "share_type": kind, "share_with": field("shareWith"), "share_with_displayname": field("shareWith"), "permissions": field("permissions"), "url": url, "note": "", "expiration": field("expireDate")});
+            d.shares.push(s.clone());
+            ok(s)
+        }
+        ("PUT", id) | ("DELETE", id) if id.starts_with("shares/") => {
+            let id = id.trim_start_matches("shares/");
+            let Some(i) = d.shares.iter().position(|s| s["id"] == id) else {
+                return json_answer(404, json!({"ocs": {"meta": {"statuscode": 404, "message": "Wrong share ID, share does not exist"}}}));
+            };
+            if method == "DELETE" {
+                d.shares.remove(i);
+                return ok(json!([]));
+            }
+            if let (Some(s), Some(fields)) = (d.shares.get_mut(i), body.as_object()) {
+                for (k, v) in fields {
+                    let key = if k == "expireDate" { "expiration" } else { k.as_str() };
+                    s[key] = v.clone();
+                }
+            }
+            ok(d.shares.get(i).cloned().unwrap_or(Json::Null))
+        }
+        _ => json_answer(404, json!({})),
     }
 }
 

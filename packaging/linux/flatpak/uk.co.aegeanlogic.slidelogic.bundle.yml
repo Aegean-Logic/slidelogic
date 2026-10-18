@@ -41,6 +41,7 @@ modules:
       - install -Dm755 bin/deckcraft /app/bin/deckcraft
       - install -Dm755 bin/deckcraft-cli /app/bin/deckcraft-cli
       - install -Dm644 share/applications/uk.co.aegeanlogic.slidelogic.desktop /app/share/applications/uk.co.aegeanlogic.slidelogic.desktop
+      - install -Dm644 share/applications/uk.co.aegeanlogic.slidelogic.links.desktop /app/share/applications/uk.co.aegeanlogic.slidelogic.links.desktop
       # .deckcraft; the runtime's shared-mime-info already knows the PowerPoint types.
       - install -Dm644 share/mime/packages/uk.co.aegeanlogic.slidelogic.xml /app/share/mime/packages/uk.co.aegeanlogic.slidelogic.xml
       # Already has the release's version and date substituted by package.sh.

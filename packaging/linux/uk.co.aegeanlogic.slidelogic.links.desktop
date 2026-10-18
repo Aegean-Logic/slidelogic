@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SlideLogic
+Comment=Open presentations from Nextcloud in SlideLogic
+Exec=deckcraft %u
+TryExec=deckcraft
+Icon=uk.co.aegeanlogic.slidelogic
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/slidelogic;

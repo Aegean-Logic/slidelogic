@@ -1,6 +1,6 @@
 //! DeckCraft desktop app.
 //!
-//! Usage: `deckcraft [--control <port>] [--sample] [--show] [files…]`
+//! Usage: `deckcraft [--control <port>] [--sample] [--show] [files…] [slidelogic://open?…]`
 //! `deckcraft --help` prints the flags and exits. `deckcraft --version` prints the version and exits.
 //!
 //! `--control <port>` (or `DECKCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server:
@@ -165,6 +165,8 @@ Usage: deckcraft [--control PORT] [--sample] [--show] [FILE...]
   --control PORT  JSON control server on 127.0.0.1:PORT
   --sample        open the sample presentation
   --show          start the slide show
+  slidelogic://…  open a presentation from Nextcloud (Open in Desktop App), signing in
+                  first if needed
   --help, -h      print this help and exit
   --version, -V   print the version and exit
 ";
@@ -219,6 +221,9 @@ fn main() -> eframe::Result {
             }
             Startup::Run { control_port, files, sample, show } => (control_port, files, sample, show),
         };
+    // "Open in Desktop App" in the browser: a presentation in Nextcloud (`nextcloud.rs`).
+    let (links, files): (Vec<String>, Vec<String>) =
+        files.into_iter().partition(|a| a.get(..11).is_some_and(|p| p.eq_ignore_ascii_case("slidelogic:")));
     log::info!("SlideLogic {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     // The log file lives under the settings directory; opened after the arguments, so `--help` and
     // `--version` leave no file behind. Records logged until now are written to it first.
@@ -273,7 +278,12 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             // Nextcloud, as OneDrive is to PowerPoint: the File view's Nextcloud places.
-            let nextcloud = nextcloud();
+            let mut nextcloud = nextcloud();
+            for link in &links {
+                if !nextcloud.open_link(link) {
+                    log::warn!("not a SlideLogic link: {link}");
+                }
+            }
             let mut app = SlideApp::new(Session::new(), services(nextcloud.cloud()));
             load_prefs(&mut app);
             // AutoRecover: reopen what a previous run left unsaved, then keep it current.
