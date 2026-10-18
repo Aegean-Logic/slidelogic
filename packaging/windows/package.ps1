@@ -12,7 +12,8 @@
   warning when no signing secrets are set).
 
   Needs: Rust (MSVC toolchain + the target), the Windows SDK (rc.exe, signtool.exe),
-  and WiX v5: dotnet tool install --global wix --version 5.0.2
+  and WiX v5 (the Setup dialogs are SlideLogic's own, so no WiX extensions):
+    dotnet tool install --global wix --version 5.0.2
 
 .EXAMPLE
   pwsh packaging/windows/package.ps1 -Arch x64

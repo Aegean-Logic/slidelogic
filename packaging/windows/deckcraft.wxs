@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  SlideLogic MSI (WiX Toolset v5: `dotnet tool install -g wix`). Built by package.ps1:
+  SlideLogic MSI (WiX Toolset v5: `dotnet tool install -g wix`; no extensions). Built by
+  package.ps1:
 
     wix build deckcraft.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
 
-  Per-machine install into Program Files, a Start Menu shortcut, `.deckcraft` owned by
-  SlideLogic, and SlideLogic offered under "Open with" for .pptx/.potx/.ppsx (without taking over
-  the user's default app for them).
+  Per-machine install into Program Files, a Start Menu shortcut, an optional desktop shortcut,
+  `.deckcraft` owned by SlideLogic, and SlideLogic offered under "Open with" for .pptx/.potx/.ppsx
+  (without taking over the user's default app for them). The Setup dialogs are Aegean Logic's
+  own, as GridLogic's and WordLogic's: the brand banner on each, then progress and a finish page.
 
   UpgradeCode and the component GUID below belong to SlideLogic alone (generated 2026-10-17;
   DeckCraft's are different), so installing SlideLogic never upgrades, replaces or removes
@@ -30,14 +32,142 @@
 
     <Icon Id="DeckcraftIcon.ico" SourceFile="$(var.IconPath)" />
     <Property Id="ARPPRODUCTICON" Value="DeckcraftIcon.ico" />
+    <!-- The Aegean Logic banner at the top of each Setup dialog (branding/generate.ps1). -->
+    <Binary Id="SlidelogicBanner" SourceFile="$(sys.SOURCEFILEDIR)branding\banner.bmp" />
     <Property Id="ARPURLINFOABOUT" Value="https://www.aegeanlogic.co.uk" />
     <Property Id="ARPURLUPDATEINFO" Value="https://github.com/Aegean-Logic/slidelogic/releases" />
     <Property Id="ARPHELPLINK" Value="https://www.aegeanlogic.co.uk" />
+
+    <!-- An explicit command-line value wins. Otherwise retain the previous installation's
+         choice, defaulting to off for a fresh install. Run only in the first sequence so the
+         execute sequence cannot reload the old choice after the user unchecks the box. -->
+    <Property Id="DESKTOPSHORTCUT" Secure="yes" />
+    <Property Id="SAVEDDESKTOPSHORTCUT" Secure="yes">
+      <RegistrySearch Id="FindDesktopShortcutPreference" Root="HKLM"
+          Key="Software\SlideLogic\Installer" Name="DesktopShortcut" Type="raw" />
+    </Property>
+    <SetProperty Id="DESKTOPSHORTCUT" Action="LoadDesktopShortcutPreference" Value="1"
+        After="AppSearch" Sequence="first"
+        Condition="NOT DESKTOPSHORTCUT AND SAVEDDESKTOPSHORTCUT = &quot;1&quot;" />
+    <SetProperty Id="DESKTOPSHORTCUT" Action="DefaultDesktopShortcut" Value="0"
+        After="LoadDesktopShortcutPreference" Sequence="first" Condition="NOT DESKTOPSHORTCUT" />
+    <SetProperty Id="DesktopShortcutChoice" Value="1" After="DefaultDesktopShortcut"
+        Sequence="ui" Condition="DESKTOPSHORTCUT = &quot;1&quot;" />
+
+    <Property Id="DefaultUIFont" Value="SlidelogicUIFont" />
+    <Property Id="ErrorDialog" Value="SlidelogicErrorDlg" />
+    <EnsureTable Id="ListBox" />
+    <UI>
+      <TextStyle Id="SlidelogicUIFont" FaceName="Segoe UI" Size="9" />
+      <TextStyle Id="SlidelogicTitleFont" FaceName="Segoe UI" Size="13" Bold="yes" />
+      <!-- Every Setup dialog opens with the Aegean Logic banner (370 x 56 dialog units). -->
+      <Dialog Id="DesktopShortcutDlg" Width="370" Height="214" Title="SlideLogic Setup" NoMinimize="yes">
+        <Control Id="Banner" Type="Bitmap" X="0" Y="0" Width="370" Height="56" TabSkip="no" Text="SlidelogicBanner" />
+        <Control Id="Heading" Type="Text" X="20" Y="68" Width="330" Height="18" Text="{\SlidelogicTitleFont}Install SlideLogic" />
+        <Control Id="Description" Type="Text" X="20" Y="90" Width="330" Height="28"
+            Text="SlideLogic, the presentation app by Aegean Logic, will be installed for everyone who uses this computer." />
+        <Control Id="DesktopShortcutCheckbox" Type="CheckBox" X="20" Y="124" Width="330" Height="16"
+            Property="DesktopShortcutChoice" CheckBoxValue="1" Text="Create a &amp;desktop shortcut" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="172" Width="370" Height="0" />
+        <Control Id="Website" Type="Hyperlink" X="20" Y="186" Width="150" Height="12"
+            Text="&lt;a href=&quot;https://www.aegeanlogic.co.uk&quot;&gt;www.aegeanlogic.co.uk&lt;/a&gt;" />
+        <Control Id="Install" Type="PushButton" X="232" Y="183" Width="60" Height="18"
+            Default="yes" ElevationShield="yes" Text="&amp;Install">
+          <!-- An unchecked checkbox clears its property. Publish an explicit zero so the
+               elevated execute sequence receives an unambiguous opt-out. -->
+          <Publish Property="DESKTOPSHORTCUT" Value="1" Condition="DesktopShortcutChoice" />
+          <Publish Property="DESKTOPSHORTCUT" Value="0" Condition="NOT DesktopShortcutChoice" />
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="298" Y="183" Width="60" Height="18" Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+
+      <!-- Windows Installer requires these support dialogs for authored full UI (ICE20).
+           They contain only installer messages and standard response controls. -->
+      <Dialog Id="SlidelogicErrorDlg" Width="320" Height="120" Title="SlideLogic Setup" ErrorDialog="yes" NoMinimize="yes">
+        <Control Id="ErrorText" Type="Text" X="15" Y="15" Width="290" Height="65" TabSkip="no" />
+        <Control Id="A" Type="PushButton" X="15" Y="90" Width="65" Height="20" Text="Abort" TabSkip="yes">
+          <Publish Event="EndDialog" Value="ErrorAbort" />
+        </Control>
+        <Control Id="C" Type="PushButton" X="15" Y="90" Width="65" Height="20" Text="Cancel" TabSkip="yes">
+          <Publish Event="EndDialog" Value="ErrorCancel" />
+        </Control>
+        <Control Id="I" Type="PushButton" X="15" Y="90" Width="65" Height="20" Text="Ignore" TabSkip="yes">
+          <Publish Event="EndDialog" Value="ErrorIgnore" />
+        </Control>
+        <Control Id="N" Type="PushButton" X="15" Y="90" Width="65" Height="20" Text="No" TabSkip="yes">
+          <Publish Event="EndDialog" Value="ErrorNo" />
+        </Control>
+        <Control Id="O" Type="PushButton" X="15" Y="90" Width="65" Height="20" Text="OK" TabSkip="yes">
+          <Publish Event="EndDialog" Value="ErrorOk" />
+        </Control>
+        <Control Id="R" Type="PushButton" X="15" Y="90" Width="65" Height="20" Text="Retry" TabSkip="yes">
+          <Publish Event="EndDialog" Value="ErrorRetry" />
+        </Control>
+        <Control Id="Y" Type="PushButton" X="15" Y="90" Width="65" Height="20" Text="Yes" TabSkip="yes">
+          <Publish Event="EndDialog" Value="ErrorYes" />
+        </Control>
+      </Dialog>
+      <Dialog Id="FilesInUse" Width="320" Height="190" Title="SlideLogic Setup" NoMinimize="yes">
+        <Control Id="Description" Type="Text" X="15" Y="15" Width="290" Height="35"
+            Text="Close the applications listed below, then choose Retry. Ignore may require a restart." />
+        <Control Id="Files" Type="ListBox" X="15" Y="55" Width="290" Height="85" Property="FileInUseProcess" />
+        <Control Id="Retry" Type="PushButton" X="95" Y="155" Width="65" Height="20" Default="yes" Text="Retry">
+          <Publish Event="EndDialog" Value="Retry" />
+        </Control>
+        <Control Id="Ignore" Type="PushButton" X="167" Y="155" Width="65" Height="20" Text="Ignore">
+          <Publish Event="EndDialog" Value="Ignore" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="240" Y="155" Width="65" Height="20" Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+      <Dialog Id="SetupCompleteDlg" Width="370" Height="150" Title="SlideLogic Setup" NoMinimize="yes">
+        <Control Id="Banner" Type="Bitmap" X="0" Y="0" Width="370" Height="56" TabSkip="no" Text="SlidelogicBanner" />
+        <Control Id="Message" Type="Text" X="20" Y="70" Width="330" Height="36" Text="SlideLogic is installed. You will find it in the Start menu, and it can open your PowerPoint presentations." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="112" Width="370" Height="0" />
+        <Control Id="Close" Type="PushButton" X="298" Y="122" Width="60" Height="18" Default="yes" Cancel="yes" Text="Close">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+      <Dialog Id="SetupCanceledDlg" Width="370" Height="150" Title="SlideLogic Setup" NoMinimize="yes">
+        <Control Id="Banner" Type="Bitmap" X="0" Y="0" Width="370" Height="56" TabSkip="no" Text="SlidelogicBanner" />
+        <Control Id="Message" Type="Text" X="20" Y="70" Width="330" Height="36" Text="SlideLogic setup was canceled." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="112" Width="370" Height="0" />
+        <Control Id="Close" Type="PushButton" X="298" Y="122" Width="60" Height="18" Default="yes" Cancel="yes" Text="Close">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+      <Dialog Id="SetupFailedDlg" Width="370" Height="150" Title="SlideLogic Setup" NoMinimize="yes">
+        <Control Id="Banner" Type="Bitmap" X="0" Y="0" Width="370" Height="56" TabSkip="no" Text="SlidelogicBanner" />
+        <Control Id="Message" Type="Text" X="20" Y="70" Width="330" Height="36" Text="SlideLogic setup could not finish. See the installer message or log for details." />
+        <Control Id="BottomLine" Type="Line" X="0" Y="112" Width="370" Height="0" />
+        <Control Id="Close" Type="PushButton" X="298" Y="122" Width="60" Height="18" Default="yes" Cancel="yes" Text="Close">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+    </UI>
+    <InstallUISequence>
+      <!-- Component conditions must see the choice before costing. Do not show the choice
+           during basic/silent installs, repair or uninstall. -->
+      <Show Dialog="DesktopShortcutDlg" Before="CostInitialize" Condition="NOT Installed AND NOT REMOVE AND UILevel = 5" />
+      <Show Dialog="SetupCompleteDlg" OnExit="success" Condition="UILevel = 5" />
+      <Show Dialog="SetupCanceledDlg" OnExit="cancel" Condition="UILevel = 5" />
+      <Show Dialog="SetupFailedDlg" OnExit="error" Condition="UILevel = 5" />
+    </InstallUISequence>
+    <AdminUISequence>
+      <Show Dialog="SetupCompleteDlg" OnExit="success" Condition="UILevel = 5" />
+      <Show Dialog="SetupCanceledDlg" OnExit="cancel" Condition="UILevel = 5" />
+      <Show Dialog="SetupFailedDlg" OnExit="error" Condition="UILevel = 5" />
+    </AdminUISequence>
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="SlideLogic" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="DesktopFolder" />
 
     <Feature Id="Main" Title="SlideLogic" Level="1">
       <ComponentGroupRef Id="DeckcraftFiles" />
@@ -76,6 +206,21 @@
 
       <Component Id="DeckcraftCli">
         <File Id="DeckcraftCliExe" Source="$(var.BinDir)\deckcraft-cli.exe" KeyPath="yes" />
+      </Component>
+
+      <!-- Persist both on and off, independently of the optional shortcut. AppSearch reads
+           this before MajorUpgrade removes the previous product. -->
+      <Component Id="DesktopShortcutPreference">
+        <RegistryValue Root="HKLM" Key="Software\SlideLogic\Installer" Name="DesktopShortcut"
+            Value="[DESKTOPSHORTCUT]" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="DesktopShortcutComponent" Directory="DesktopFolder" Condition="DESKTOPSHORTCUT = &quot;1&quot;">
+        <Shortcut Id="DesktopShortcut" Name="SlideLogic" Description="SlideLogic presentations and slide shows"
+            Target="[#DeckcraftExe]" WorkingDirectory="INSTALLFOLDER" Icon="DeckcraftIcon.ico" IconIndex="0" />
+        <!-- HKMU resolves to HKLM for this per-machine package, so another account can
+             uninstall the marker too. MSI root -1 also satisfies ICE43 for this shortcut. -->
+        <RegistryValue Root="HKMU" Key="Software\SlideLogic\Installer" Name="DesktopShortcutComponent"
+            Value="1" Type="integer" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>
