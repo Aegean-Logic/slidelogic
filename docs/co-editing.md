@@ -34,9 +34,16 @@ the same file, and later a guest opening it from a link to its folder, all in on
 guests' new slides (file link and folder link) reached everyone, and the view-only guest
 followed live; their New Slide was refused with "You can view this presentation but not edit
 it." and nothing was sent. Paths out of the shared folder, missing files and unknown tokens
-answered 404. A view-only member signed in with their own account (a read-only user share) takes
-the same path (`canEdit` false from the server) but wasn't tried live: that needs a second
-account in the test Nextcloud.
+answered 404.
+
+And a view-only member with their own account: a test user given the file through a read-only
+user share, signed in beside gaz (on `127.0.0.1:8080`, so both sessions held). They joined the
+same session as "(viewing)", with "You can view this presentation but not edit it." over the
+editor; gaz saw them in the strip and on the thumbnails; gaz's new slide reached them; their New
+Slide was refused with the same message in the status bar and nothing was sent; a push or a
+checkpoint made directly with their session was refused by the server (403). The status bar
+used to draw a long message under its own buttons in a narrow window; it now cuts the message
+short with "…" before them, the whole message on hover.
 
 Found on the way: a tab loaded in the background crashed SlideLogic when the session's first
 messages arrived before its first frame (egui has no fonts until then). The bridge now holds
@@ -187,7 +194,7 @@ Known limits, accepted for now:
 
 | Date | Change |
 |---|---|
-| 2026-10-18 | Shared links (files, folders) checked end to end; a background tab no longer crashes before its first frame; view-only refusals read plainly |
+| 2026-10-18 | Shared links (files, folders) and a read-only user share checked end to end; a background tab no longer crashes before its first frame; view-only refusals read plainly and fit the status bar |
 | 2026-10-18 | Phases 2–3 built: session hook, presence, web bridge, Nextcloud sequencer; checked end to end; status, joining, limits and phases updated |
 | 2026-10-18 | Phase 1 built: `collab` module, replica, ids, fuzz; status, decisions, limits and phases updated |
 | 2026-10-17 | Design (not started) |
