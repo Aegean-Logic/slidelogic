@@ -133,16 +133,17 @@ pub fn notes_pane(app: &mut SlideApp, ui: &mut Ui) {
     if st.selection.target != deckcraft_engine::Target::Slides {
         return;
     }
+    let Some(sid) = st.current_slide().map(|s| s.id) else { return };
     let (idx, uid) = (st.selection.slide, st.uid);
     // Save an edited draft once the field has lost focus or another slide is shown (before
     // anything reloads it), to the slide it was written on.
     let id = egui::Id::new("notes_edit");
     let focused = ui.ctx().memory(|m| m.has_focus(id));
-    if app.notes_buf.2.edited && (!focused || app.notes_buf.0 != uid || app.notes_buf.1 != idx) {
-        app.notes_buf.2.edited = false;
+    if app.notes_buf.2.edited && (!focused || app.notes_buf.0 != uid || app.notes_buf.1 != sid) {
         if app.notes_buf.0 == uid {
-            let _ = app.run("slide.notes", json!({"body": app.notes_buf.2.body, "index": app.notes_buf.1}));
+            save_notes(app);
         }
+        app.notes_buf.2.edited = false;
     }
     let notes = app.session.active().and_then(|st| st.current_slide()).map(|s| s.notes.clone()).unwrap_or_default();
     egui::Panel::bottom("notes")
@@ -155,9 +156,23 @@ pub fn notes_pane(app: &mut SlideApp, ui: &mut Ui) {
             let rect = ui.max_rect();
             ui.painter()
                 .line_segment([pos2(rect.min.x - 8.0, rect.min.y - 6.0), pos2(rect.max.x + 8.0, rect.min.y - 6.0)], Stroke::new(1.0, t.separator));
-            // Keep a local draft per slide, following the notes while the field isn't focused.
-            if app.notes_buf.0 != uid || app.notes_buf.1 != idx || (!focused && app.notes_buf.2.body != notes) {
-                app.notes_buf = (uid, idx, crate::notes::Draft::new(&notes));
+            // Keep a local draft per slide, taking in what changes in its notes meanwhile (a
+            // co-editor typing in them too), the caret staying by the text it was at.
+            if app.notes_buf.0 != uid || app.notes_buf.1 != sid {
+                app.notes_buf = (uid, sid, crate::notes::Draft::new(&notes));
+            } else if app.notes_buf.2.base != notes {
+                let before = app.notes_buf.2.text.clone();
+                app.notes_buf.2.follow(&notes);
+                let after = &app.notes_buf.2.text;
+                if focused
+                    && *after != before
+                    && let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id)
+                    && let Some(r) = state.cursor.char_range()
+                {
+                    let map = |c: egui::text::CCursor| egui::text::CCursor::new(crate::notes::follow_caret(&before, after, c.index.0));
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(map(r.secondary), map(r.primary))));
+                    state.store(ui.ctx(), id);
+                }
             }
             let mut draft = app.notes_buf.2.clone();
             let look = crate::notes::Look { size: 13.0, color: None };
@@ -249,13 +264,24 @@ pub fn notes_pane(app: &mut SlideApp, ui: &mut Ui) {
                 app.squiggles.notes_menu = None;
                 draft.text = buf.clone();
                 deckcraft_model::edit::replace_text(&mut draft.body, &buf);
-                draft.edited = false;
+                draft.saved();
                 let _ = app.run("slide.notes", json!({"body": draft.body, "index": idx}));
             }
             if r.lost_focus() && draft.edited {
-                draft.edited = false;
+                draft.saved();
                 let _ = app.run("slide.notes", json!({"body": draft.body, "index": idx}));
             }
             app.notes_buf.2 = draft;
         });
+}
+
+/// Saves the notes pane's draft to the slide it was written on, wherever that is now, with what
+/// changed in those notes since taken in; nothing when that slide is gone.
+fn save_notes(app: &mut SlideApp) {
+    let sid = app.notes_buf.1;
+    let found = app.session.active().and_then(|st| st.doc.slides.iter().enumerate().find(|(_, s)| s.id == sid).map(|(i, s)| (i, s.notes.clone())));
+    let Some((index, notes)) = found else { return };
+    app.notes_buf.2.follow(&notes);
+    app.notes_buf.2.saved();
+    let _ = app.run("slide.notes", json!({"body": app.notes_buf.2.body, "index": index}));
 }

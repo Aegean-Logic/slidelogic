@@ -28,11 +28,67 @@ pub struct Draft {
     pub body: TextBody,
     /// Edited since it was saved.
     pub edited: bool,
+    /// The notes as they were when the draft was made or last saved: a change to them since
+    /// (someone co-editing, an undo) is taken into the draft by `follow`.
+    pub base: TextBody,
 }
 
 impl Draft {
     pub fn new(body: &TextBody) -> Self {
-        Draft { text: body.text(), body: body.clone(), edited: false }
+        Draft { text: body.text(), body: body.clone(), edited: false, base: body.clone() }
+    }
+
+    /// The draft has been saved as `slide.notes {body}`: the notes are now its body.
+    pub fn saved(&mut self) {
+        self.edited = false;
+        self.base = self.body.clone();
+    }
+
+    /// Takes in a change made to the notes under the draft: it becomes `notes`, with the edits
+    /// typed into it since `base` made on top (merged as a co-editor's edit is), so saving it
+    /// keeps the others' text. Edits that can't be merged stay as typed, over the change.
+    pub fn follow(&mut self, notes: &TextBody) {
+        if *notes == self.base {
+            return;
+        }
+        if !self.edited {
+            *self = Draft::new(notes);
+            return;
+        }
+        if let Ok(body) = merged(&self.base, &self.body, notes) {
+            self.text = body.text();
+            self.body = body;
+        }
+        self.base = notes.clone();
+    }
+}
+
+/// `notes` with the edits that turned `base` into `mine` made on top.
+fn merged(base: &TextBody, mine: &TextBody, notes: &TextBody) -> deckcraft_engine::Result<TextBody> {
+    use deckcraft_engine::collab::text;
+    let edits = text::diff(&base.paragraphs, &mine.paragraphs)?;
+    let theirs = text::diff(&base.paragraphs, &notes.paragraphs)?;
+    // The others' change is in the shared order already: where both type at one place, theirs
+    // comes first.
+    let edits = text::transform(&edits, &theirs, false);
+    let mut body = notes.clone();
+    text::apply(&mut body.paragraphs, &edits)?;
+    Ok(body)
+}
+
+/// Where the character position `at` in `old` is in `new`, for one change between them (text
+/// before it stays put, text after it moves with the change).
+pub fn follow_caret(old: &str, new: &str, at: usize) -> usize {
+    let (o, n): (Vec<char>, Vec<char>) = (old.chars().collect(), new.chars().collect());
+    let prefix = o.iter().zip(&n).take_while(|(a, b)| a == b).count();
+    let suffix = o[prefix..].iter().rev().zip(n[prefix..].iter().rev()).take_while(|(a, b)| a == b).count();
+    if at <= prefix {
+        at
+    } else if at >= o.len() - suffix {
+        (at + n.len()).saturating_sub(o.len()).min(n.len())
+    } else {
+        // Inside the changed text: after what replaced it.
+        n.len() - suffix
     }
 }
 
@@ -229,6 +285,35 @@ mod tests {
     use deckcraft_model::text::{ParaProps, Run};
 
     use super::*;
+
+    #[test]
+    fn caret_follows_a_change_elsewhere() {
+        // Text put in before the caret moves it; after it, or a deletion after it, doesn't.
+        assert_eq!(follow_caret("Hello world", "Bob: Hello world", 11), 16);
+        assert_eq!(follow_caret("Hello world", "Hello world, all", 5), 5);
+        assert_eq!(follow_caret("Hello world", "Hello", 3), 3);
+        // Inside text someone else replaced: after what replaced it.
+        assert_eq!(follow_caret("Hello world", "Hello there", 8), 11);
+        assert_eq!(follow_caret("ab", "", 2), 0);
+        assert_eq!(follow_caret("", "écrit", 0), 0);
+    }
+
+    /// A draft with typing in it takes in the notes changed under it, keeping that typing.
+    #[test]
+    fn edited_draft_follows_the_notes() {
+        let mut d = Draft::new(&TextBody { paragraphs: vec![Paragraph::new("One"), Paragraph::new("Two")], ..Default::default() });
+        d.text = "One!\nTwo".into();
+        edit::replace_text(&mut d.body, &d.text);
+        d.edited = true;
+        let notes = TextBody { paragraphs: vec![Paragraph::new("One"), Paragraph::new("Two too")], ..Default::default() };
+        d.follow(&notes);
+        assert_eq!(d.text, "One!\nTwo too");
+        assert_eq!((d.body.text(), d.edited, &d.base), ("One!\nTwo too".to_string(), true, &notes));
+        // Not edited: it simply becomes the notes.
+        let mut d = Draft::new(&notes);
+        d.follow(&TextBody { paragraphs: vec![Paragraph::new("Three")], ..Default::default() });
+        assert_eq!((d.text.as_str(), d.edited), ("Three", false));
+    }
 
     /// Notes as PowerPoint users write them: a bold heading, a plain line, points with a
     /// Wingdings square bullet and a hanging indent (one long enough to wrap), numbered points,

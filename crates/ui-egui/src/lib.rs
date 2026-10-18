@@ -505,7 +505,7 @@ pub struct SlideApp {
     pub last_recovery: f64,
     /// Quit was confirmed (changes saved or discarded): let the window close.
     pub quit_confirmed: bool,
-    pub(crate) notes_buf: (u64, usize, notes::Draft),
+    pub(crate) notes_buf: (u64, deckcraft_model::SlideId, notes::Draft),
     /// Faces borrowed from the font database for text the interface fonts can't draw (#101).
     pub ui_fonts: uifonts::UiFonts,
     /// Thumbnail pane drag (slide index, current drop index).
@@ -584,7 +584,7 @@ impl SlideApp {
             last_time: 0.0,
             last_recovery: 0.0,
             quit_confirmed: false,
-            notes_buf: (0, usize::MAX, notes::Draft::default()),
+            notes_buf: (0, deckcraft_model::SlideId(u32::MAX), notes::Draft::default()),
             ui_fonts: uifonts::UiFonts::default(),
             thumb_drag: None,
             selpane: selpane::State::default(),
@@ -3064,6 +3064,46 @@ mod tests {
         let data = s.execute("file.saveBytes", &json!({"format": "pptx"})).unwrap()["data"].clone();
         s.execute("file.openBytes", &json!({"name": "notes.pptx", "data": data})).unwrap();
         check(&s.active().unwrap().doc.slides[0].notes);
+    }
+
+    /// Notes changed under a draft (a co-editor typing in them, a slide put in above) are taken
+    /// in: saving the draft keeps their text and goes to the slide it was written on.
+    #[test]
+    fn notes_draft_takes_in_changes_under_it() {
+        let mut session = Session::with_new();
+        session.execute("slide.notes", &json!({"index": 0, "text": "Hello world"})).unwrap();
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut SlideApp| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            },
+            SlideApp::new(session, Services::default()),
+        );
+        harness.run_steps(2);
+        let id = egui::Id::new("notes_edit");
+        harness.ctx.memory_mut(|m| m.request_focus(id));
+        harness.run_steps(1);
+        let mut st = egui::TextEdit::load_state(&harness.ctx, id).unwrap_or_default();
+        st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(11))));
+        egui::TextEdit::store_state(&harness.ctx, id, st);
+        harness.run_steps(1);
+        harness.event(egui::Event::Text(" (Ann)".into()));
+        harness.run_steps(1);
+        // Someone else's edit lands in these notes, and a slide comes in above this one.
+        let s = &mut harness.state_mut().session;
+        s.execute("slide.notes", &json!({"index": 0, "text": "Bob: Hello world"})).unwrap();
+        s.execute("slide.new", &json!({"at": 0})).unwrap();
+        s.execute("slide.go", &json!({"index": 1})).unwrap();
+        harness.run_steps(1);
+        assert_eq!(harness.state().notes_buf.2.text, "Bob: Hello world (Ann)", "the draft takes the edit in");
+        // The caret stayed after the typed text.
+        harness.event(egui::Event::Text("!".into()));
+        harness.run_steps(1);
+        harness.ctx.memory_mut(|m| m.surrender_focus(id));
+        harness.run_steps(2);
+        let doc = &harness.state().session.active().unwrap().doc;
+        assert_eq!(doc.slides[1].notes.text(), "Bob: Hello world (Ann)!");
+        assert_eq!(doc.slides[0].notes.text(), "", "the new slide's notes are untouched");
     }
 
     fn step_app(services: Services) -> egui_kittest::Harness<'static, SlideApp> {
