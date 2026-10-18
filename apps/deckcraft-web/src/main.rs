@@ -23,6 +23,8 @@
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod acks;
+#[cfg(any(target_arch = "wasm32", test))]
+mod collab_msg;
 #[cfg(target_arch = "wasm32")]
 mod host;
 

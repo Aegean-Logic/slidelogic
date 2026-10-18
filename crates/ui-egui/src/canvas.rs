@@ -806,6 +806,10 @@ fn overlays(app: &mut SlideApp, ui: &Ui, painter: &egui::Painter, xf: Xf, t: &To
         }
     }
     let Some(st) = app.session.active() else { return };
+    // Co-editing: the others' selections, under this person's own.
+    if app.session.collab_shares(st.uid) {
+        crate::presence::paint_canvas(st, app.session.collab_others(), painter, xf);
+    }
     let sel_stroke = Stroke::new(1.0, t.selection);
     let editing = st.selection.text.clone();
     for id in &st.selection.shapes {

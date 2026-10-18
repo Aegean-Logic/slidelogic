@@ -21,6 +21,7 @@ pub mod menus;
 pub mod notes;
 pub mod opening;
 pub mod panes;
+pub mod presence;
 mod preview;
 pub mod qat;
 pub mod ribbon;

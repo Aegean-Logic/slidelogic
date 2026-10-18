@@ -139,10 +139,13 @@ pub fn has_text_or_shapes(s: &Session) -> std::result::Result<(), String> {
 }
 
 pub fn can_undo(s: &Session) -> std::result::Result<(), String> {
-    if s.active().is_some_and(|d| !d.history.undo.is_empty()) { Ok(()) } else { Err("nothing to undo".into()) }
+    // A shared presentation: this person's own edits only.
+    let can = s.collab_can_undo(false).unwrap_or_else(|| s.active().is_some_and(|d| !d.history.undo.is_empty()));
+    if can { Ok(()) } else { Err("nothing to undo".into()) }
 }
 pub fn can_redo(s: &Session) -> std::result::Result<(), String> {
-    if s.active().is_some_and(|d| !d.history.redo.is_empty()) { Ok(()) } else { Err("nothing to redo".into()) }
+    let can = s.collab_can_undo(true).unwrap_or_else(|| s.active().is_some_and(|d| !d.history.redo.is_empty()));
+    if can { Ok(()) } else { Err("nothing to redo".into()) }
 }
 
 macro_rules! cmd {

@@ -56,10 +56,12 @@ fn restore(s: &mut Session, redo: bool) -> Result<Value> {
 }
 
 fn undo(s: &mut Session, _p: &Value) -> Result<Value> {
-    restore(s, false)
+    // A shared presentation: this person's own last edit, not a snapshot (it would take back
+    // everyone's edits since).
+    s.collab_undo(false).unwrap_or_else(|| restore(s, false))
 }
 fn redo(s: &mut Session, _p: &Value) -> Result<Value> {
-    restore(s, true)
+    s.collab_undo(true).unwrap_or_else(|| restore(s, true))
 }
 
 fn slides_scope(s: &Session, p: &Value) -> bool {

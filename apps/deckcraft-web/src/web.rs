@@ -67,6 +67,10 @@ pub fn start() {
                     if q.contains("show") && app_bridge.is_none() {
                         app.start_show(0, false);
                     }
+                    let app = std::rc::Rc::new(std::cell::RefCell::new(app));
+                    if let Some(bridge) = &app_bridge {
+                        bridge.attach(&app);
+                    }
                     Ok(Box::new(WebShell { app, inbox, bridge: app_bridge }))
                 }),
             )
@@ -94,7 +98,8 @@ fn query_param(key: &str) -> Option<String> {
 /// Wraps the app to read dropped files asynchronously (browsers can't read them synchronously)
 /// and feed them through the inbox.
 struct WebShell {
-    app: SlideApp,
+    /// Shared with the host bridge, which handles co-editing messages between frames.
+    app: std::rc::Rc<std::cell::RefCell<SlideApp>>,
     inbox: Inbox,
     /// `?host=parent`: the page SlideLogic is framed in.
     bridge: Option<crate::host::Bridge>,
@@ -106,7 +111,7 @@ impl eframe::App for WebShell {
         for f in dropped {
             // Capture the document and slide now. The bytes arrive later, after the user may
             // have switched slides.
-            let id = self.app.begin_external_file("drop");
+            let id = self.app.borrow_mut().begin_external_file("drop");
             let inbox = self.inbox.clone();
             let ctx = ctx.clone();
             wasm_bindgen_futures::spawn_local(async move {
@@ -124,17 +129,18 @@ impl eframe::App for WebShell {
                 }
             });
         }
-        self.app.logic(ctx);
+        self.app.borrow_mut().logic(ctx);
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        self.app.raw_input_hook(raw);
+        self.app.borrow_mut().raw_input_hook(raw);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.app.ui(ui);
+        let mut app = self.app.borrow_mut();
+        app.ui(ui);
         if let Some(bridge) = &self.bridge {
-            bridge.sync(&mut self.app, ui.ctx());
+            bridge.sync(&mut app, ui.ctx());
         }
     }
 }

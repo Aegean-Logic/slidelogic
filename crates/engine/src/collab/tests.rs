@@ -22,7 +22,6 @@ struct Server {
 
 struct Person {
     s: Session,
-    r: Replica,
     /// Log entries applied.
     delivered: usize,
 }
@@ -32,13 +31,23 @@ impl Person {
         &self.s.doc().unwrap().doc
     }
 
-    fn shown(&mut self) -> &mut Arc<Presentation> {
-        &mut self.s.doc_mut().unwrap().doc
+    /// This person's copy, as the session keeps it.
+    fn r(&self) -> &Replica {
+        &self.s.collab.as_ref().unwrap().replica
+    }
+
+    fn r_mut(&mut self) -> &mut Replica {
+        &mut self.s.collab.as_mut().unwrap().replica
+    }
+
+    /// Undo steps of this person's own.
+    fn steps(&self) -> usize {
+        self.r().labels(false).len()
     }
 
     /// Sends this person's next op to the server, if they have one ready.
     fn push(&mut self, server: &mut Server) -> bool {
-        let Some(out) = self.r.outgoing(&mut self.s.doc_mut().unwrap().doc) else { return false };
+        let Some(out) = self.s.collab_outgoing() else { return false };
         let out: Outgoing = serde_json::from_str(&serde_json::to_string(&out).unwrap()).unwrap();
         let seq = server.log.len() as u64 + 1;
         let msg = Incoming { seq, client: out.client, client_seq: out.client_seq, base: out.base, op: out.op };
@@ -50,39 +59,21 @@ impl Person {
     fn deliver_one(&mut self, server: &Server) -> bool {
         let Some(msg) = server.log.get(self.delivered) else { return false };
         let msg: Incoming = serde_json::from_str(msg).unwrap();
-        self.r.receive(msg, &mut self.s.doc_mut().unwrap().doc).unwrap();
-        self.s.doc_mut().unwrap().revision += 1;
-        self.s.select(|_, _| {}).unwrap();
+        self.s.collab_receive(msg).unwrap();
         self.delivered += 1;
         true
     }
 
-    /// Runs a command for this person, as the session hook will: Undo and Redo take back their
-    /// own edits; any other change is recorded for sharing (or taken back when it can't be).
-    /// Whether it changed the presentation.
+    /// Runs a command for this person through the session: Undo and Redo take back their own
+    /// edits, any other change is shared (or taken back when it can't be). Whether it changed
+    /// the presentation.
     fn run(&mut self, id: &str, params: &Value) -> bool {
-        if id == "edit.undo" || id == "edit.redo" {
-            let r = self.r.undo(&mut self.s.doc_mut().unwrap().doc, id == "edit.redo");
-            self.s.select(|_, _| {}).unwrap();
-            return matches!(r, Ok(Some(_)));
-        }
         let before = self.doc().clone();
         let res = self.s.execute(id, params);
         if let Err(EngineError::Internal(..)) = &res {
             panic!("command panicked (caught by the guard): {res:?}; {id} {params}");
         }
-        let after = self.doc().clone();
-        if Arc::ptr_eq(&before, &after) {
-            return false;
-        }
-        let label = command_specs().iter().find(|c| c.id == id).map_or(id, |c| c.label);
-        match self.r.local(&before, &after, label) {
-            Ok(shared) => shared,
-            Err(_) => {
-                *self.shown() = before;
-                false
-            }
-        }
+        !Arc::ptr_eq(&before, self.doc()) && !capture(&before, self.doc()).unwrap().is_empty()
     }
 }
 
@@ -94,8 +85,8 @@ fn people(n: u64) -> Vec<Person> {
         .map(|client| {
             let mut s = Session::new();
             s.add_document(DocState::new(doc.clone(), None, "Shared".into()));
-            let r = Replica::new(client, &mut s.doc_mut().unwrap().doc, 0).unwrap();
-            Person { s, r, delivered: 0 }
+            s.collab_start(client, 0).unwrap();
+            Person { s, delivered: 0 }
         })
         .collect()
 }
@@ -112,7 +103,7 @@ fn settle(server: &mut Server, all: &mut [Person]) {
                 busy = true;
             }
         }
-        if !busy && all.iter().all(|p| !p.r.has_pending(p.doc())) {
+        if !busy && all.iter().all(|p| !p.s.collab_pending()) {
             return;
         }
     }
@@ -226,7 +217,7 @@ fn two_people_adding_a_slide_at_once_both_keep_theirs() {
 fn ids_come_from_each_persons_range() {
     let all = people(3);
     for p in &all {
-        let (lo, hi) = id_space(p.r.client());
+        let (lo, hi) = id_space(p.r().client());
         assert!((lo..hi).contains(&p.doc().next_id));
     }
     assert_ne!(id_space(1), id_space(2));
@@ -346,7 +337,7 @@ fn undo_takes_back_only_your_own_edit() {
     assert_same(&all, "redo");
     assert_ne!(all[1].doc().slides[0].shape(ids[0]).unwrap().xfrm, start);
     // Nothing of Bob's to undo on Ann's side.
-    assert!(!all[0].r.labels(false).is_empty());
+    assert!(!all[0].r().labels(false).is_empty());
 }
 
 #[test]
@@ -414,13 +405,143 @@ fn hostile_ops_are_refused_not_crashed_on() {
 }
 
 #[test]
+fn a_view_only_person_cant_edit_but_follows_along() {
+    let mut server = Server::default();
+    let mut all = people(2);
+    all[1].s.collab_set_read_only(true);
+    let n = all[1].doc().slides.len();
+    assert!(matches!(all[1].s.execute("slide.new", &json!({})), Err(EngineError::Disabled(..))));
+    assert_eq!(all[1].doc().slides.len(), n);
+    // An edit that isn't a command (a gesture's result) is taken back with a notice.
+    let before = all[1].doc().clone();
+    all[1]
+        .s
+        .edit(|doc, _| {
+            doc.slides.pop();
+            Ok(())
+        })
+        .unwrap();
+    assert!(all[1].s.collab_outgoing().is_none());
+    assert!(Arc::ptr_eq(all[1].doc(), &before));
+    assert!(all[1].s.collab_take_notice().is_some_and(|m| m.contains("view")));
+    // Moving between slides still works, and the others' edits arrive.
+    assert!(all[1].s.execute("slide.next", &json!({})).is_ok());
+    all[0].run("slide.new", &json!({"title": "From Ann"}));
+    settle(&mut server, &mut all);
+    assert_same(&all, "view-only follows");
+    assert_eq!(all[1].doc().slides.len(), n + 1);
+}
+
+#[test]
+fn typing_undoes_as_without_co_editing() {
+    let mut server = Server::default();
+    let mut all = people(2);
+    go_to(&mut all[0], 0);
+    let id = shapes_on(&all[0], 0)[0].id;
+    let before = canonical(all[0].doc());
+    all[0].run("text.edit", &json!({"id": id.0}));
+    for ch in ["H", "e", "y"] {
+        all[0].run("text.insert", &json!({"text": ch}));
+        // The others' edits arrive while typing goes on.
+        settle(&mut server, &mut all);
+    }
+    // One step per command, as SlideLogic's own undo has it.
+    assert_eq!(all[0].steps(), 3, "{:?}", all[0].r().labels(false));
+    for _ in 0..3 {
+        assert!(all[0].run("edit.undo", &json!({})));
+    }
+    assert_eq!(canonical(all[0].doc()), before);
+    settle(&mut server, &mut all);
+    assert_same(&all, "typing undone");
+}
+
+#[test]
+fn someone_elses_edit_during_a_drag_stays() {
+    use crate::tools::{PointerEvent, PointerKind};
+    let ev = |kind, x, y| PointerEvent { kind, x, y, mods: Default::default(), tol: 3.0, pressure: None };
+    let mut server = Server::default();
+    let mut all = people(2);
+    go_to(&mut all[0], 0);
+    go_to(&mut all[1], 0);
+    all[0].run("shape.insert", &json!({"preset": "rect", "rect": [600, 380, 100, 100]}));
+    let id = all[0].doc().slides[0].shapes.last().unwrap().id;
+    settle(&mut server, &mut all);
+    let n = all[0].doc().slides.len();
+    all[0].s.pointer(ev(PointerKind::Down, 650.0, 430.0)).unwrap();
+    all[0].s.pointer(ev(PointerKind::Drag, 670.0, 440.0)).unwrap();
+    assert!(all[0].s.doc().unwrap().interaction.is_some(), "a drag in progress");
+    assert!(all[0].s.collab_outgoing().is_none(), "nothing goes mid-drag");
+    // Bob adds a slide; it arrives while Ann is still dragging.
+    all[1].run("slide.new", &json!({"title": "Bob's"}));
+    all[1].push(&mut server);
+    while all[0].deliver_one(&server) {}
+    all[0].s.pointer(ev(PointerKind::Drag, 700.0, 450.0)).unwrap();
+    all[0].s.pointer(ev(PointerKind::Up, 700.0, 450.0)).unwrap();
+    settle(&mut server, &mut all);
+    assert_same(&all, "a drag and a new slide");
+    assert_eq!(all[1].doc().slides.len(), n + 1, "Bob's slide survived Ann's drag");
+    let x = all[1].doc().slides[0].shape(id).unwrap().xfrm.unwrap();
+    assert!(x.x > 640.0 && x.y > 390.0, "Ann's drag arrived (snapping aside): {x:?}");
+    // The drag is one undo step of Ann's.
+    assert!(all[0].run("edit.undo", &json!({})));
+    let x = all[0].doc().slides[0].shape(id).unwrap().xfrm.unwrap();
+    assert_eq!((x.x, x.y), (600.0, 380.0));
+}
+
+#[test]
+fn presence_says_where_you_are_and_keeps_the_others() {
+    let mut all = people(2);
+    go_to(&mut all[0], 1);
+    let slide = all[0].doc().slides[1].id;
+    let id = shapes_on(&all[0], 1)[0].id;
+    all[0].s.execute("edit.select", &json!({"ids": [id.0]})).unwrap();
+    assert_eq!(all[0].s.collab_presence(), json!({"slide": slide.0, "shapes": [id.0]}));
+    let long = "x".repeat(500);
+    all[1].s.collab_set_others(vec![Other::new(1, &long, [1, 2, 3], Some(slide), vec![id])]);
+    let others = all[1].s.collab_others();
+    assert_eq!(others.len(), 1);
+    assert_eq!(others[0].name.chars().count(), 60);
+    assert_eq!(others[0].shapes, vec![id]);
+    // Not shared: nothing to report.
+    let mut s = Session::with_new();
+    assert_eq!(s.collab_presence(), Value::Null);
+    assert!(s.collab_outgoing().is_none());
+}
+
+#[test]
+fn a_late_joiner_starts_from_the_checkpoint_snapshot() {
+    let mut server = Server::default();
+    let mut all = people(2);
+    all[0].run("slide.new", &json!({"title": "Before the save"}));
+    settle(&mut server, &mut all);
+    // A checkpoint: the shared presentation with its log position.
+    let (seq, state) = all[0].s.collab_snapshot().unwrap().unwrap();
+    let saved = all[0].s.collab_confirmed().map(|(_, p)| canonical(p)).unwrap();
+    all[1].run("slide.delete", &json!({"index": 0}));
+    all[0].run("shape.insert", &json!({"preset": "star5", "rect": [10, 10, 50, 50]}));
+    settle(&mut server, &mut all);
+    // Someone joins from the checkpoint: a blank presentation replaced by the snapshot.
+    let mut s = Session::with_new();
+    s.collab_load_snapshot(&state).unwrap();
+    assert_eq!(canonical(&s.doc().unwrap().doc), saved, "the snapshot is the shared presentation exactly");
+    s.collab_start(3, seq).unwrap();
+    let mut late = Person { s, delivered: seq as usize };
+    while late.deliver_one(&server) {}
+    all.push(late);
+    all[2].run("slide.new", &json!({"title": "Late"}));
+    settle(&mut server, &mut all);
+    assert_same(&all, "late joiner");
+    assert!(Session::with_new().collab_load_snapshot("not a snapshot").is_err());
+}
+
+#[test]
 fn an_edit_with_ids_from_outside_the_range_is_taken_back() {
     let mut all = people(1);
     let p = &mut all[0];
     let before = p.doc().clone();
     let mut after = (*before).clone();
     after.next_id = 7;
-    assert!(p.r.local(&before, &after, "x").is_err());
+    assert!(p.r_mut().local(&before, &after, "x", false).is_err());
 }
 
 // --- The fuzz ---------------------------------------------------------------------------------
@@ -533,7 +654,9 @@ fn fuzz(seed: u64, steps: usize, n: u64) {
                 let p = params(&mut r, &all[who].s);
                 log.push_back(format!("{} runs {id} {p}", who + 1));
                 let before = all[who].doc().clone();
+                let steps = all[who].steps();
                 let changed = all[who].run(id, &p);
+                let new_step = all[who].steps() == steps + 1;
                 let after = all[who].doc().clone();
                 if changed {
                     edits += 1;
@@ -550,7 +673,7 @@ fn fuzz(seed: u64, steps: usize, n: u64) {
                     apply(&mut rebuilt, &op).unwrap_or_else(|e| panic!("own op refused: {e}; {}", ctx(&log)));
                     assert!(capture(&rebuilt, &after).unwrap().is_empty(), "the op doesn't rebuild the edit; {}", ctx(&log));
                     // Undo then redo of a fresh edit gets the same presentation back.
-                    if !matches!(id, "edit.undo" | "edit.redo") && r.below(4) == 0 {
+                    if new_step && !matches!(id, "edit.undo" | "edit.redo") && r.below(4) == 0 {
                         assert!(all[who].run("edit.undo", &json!({})), "nothing to undo; {}", ctx(&log));
                         let undone = canonical(all[who].doc());
                         let was = canonical(&before);

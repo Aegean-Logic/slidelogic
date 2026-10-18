@@ -44,6 +44,8 @@ fn list(app: &mut SlideApp, ui: &mut Ui) {
     let doc = st.doc.clone();
     let cur = st.selection.slide;
     let multi = st.selection.slides.clone();
+    // Co-editing: who else is on which slide.
+    let others = if app.session.collab_shares(st.uid) { app.session.collab_others().to_vec() } else { Vec::new() };
     let width = ui.available_width();
     let tw = (width - 40.0).max(60.0);
     let th = tw * (doc.slide_size.height / doc.slide_size.width.max(1.0)) as f32;
@@ -139,6 +141,7 @@ fn list(app: &mut SlideApp, ui: &mut Ui) {
                 egui::StrokeKind::Outside,
             );
         }
+        crate::presence::paint_thumb(p, img, &others, id);
         if resp.clicked() {
             let (shift, cmd) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
             if let Some(id) = id {

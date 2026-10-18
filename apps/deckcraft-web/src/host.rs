@@ -22,6 +22,32 @@
 //! `{ ack: true }` when this is on, so a parent can tell a SlideLogic that ignores the flag.
 //! Without it, a presentation counts as saved as soon as it's handed over.
 //!
+//! Co-editing (the page runs the session with the server; [`collab_msg`] checks what it sends):
+//!
+//! - `deckcraft:ready` says `{ collab: true }`: this build can co-edit.
+//! - `deckcraft:collab:start` (from the parent): `{ client (or clientId), seq, readOnly?, user?,
+//!   color?, state? }`, after `deckcraft:open`: the presentation just opened is the shared one as
+//!   of log position `seq`. With `state` (a checkpoint's snapshot, `Session::collab_load_snapshot`)
+//!   the snapshot is, and replaces the file just opened (a .pptx read back numbers its slides
+//!   afresh). `readOnly`: this person can follow but not edit.
+//! - `deckcraft:collab:entries` (from the parent): `{ json }`, the server's log entries in order
+//!   (JSON text of `collab::Incoming`s).
+//! - `deckcraft:collab:op` (to the parent): `{ json }`, this person's next op for the server
+//!   (`collab::Outgoing`). The next comes once this one is back in the log.
+//! - `deckcraft:collab:checkpoint` (from the parent): `{ id }`; answered with
+//!   `deckcraft:collab:checkpointData { id, seq, name, bytes, state }`: the shared presentation
+//!   (without this person's unconfirmed edits) in the opened file's format, its log position, and
+//!   its state snapshot (text) for people who join from that save.
+//! - `deckcraft:collab:selection` (to the parent): `{ json }`, where this person is (`{slide,
+//!   shapes}`, `Session::collab_presence`) whenever it changes; `deckcraft:collab:presence` (from
+//!   the parent): `{ json }`, the others' (`[{client, name, color, slide, shapes}]`), drawn on the
+//!   slide and its thumbnail.
+//! - `deckcraft:collab:stop` (from the parent) ends sharing; `deckcraft:collab:error` (to the
+//!   parent) `{ error }` says this copy can't follow the log and must rejoin.
+//!
+//! Co-editing messages are handled as they arrive, not at the next frame, so a hidden tab (which
+//! draws none) keeps up with the others and answers checkpoint requests ([`Bridge::attach`]).
+//!
 //! Only the parent window on the page's own origin is heard or answered. In host mode the app
 //! starts with no presentation (the page sends one), and the parent guards leaving the page.
 //!
@@ -29,8 +55,8 @@
 //! [`Bridge::handle`].
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
-use std::rc::Rc;
+use std::collections::{HashSet, VecDeque};
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use deckcraft_engine::DocState;
@@ -41,6 +67,7 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 
 use crate::acks::{self, Reply, SaveAcks, Settled};
+use crate::collab_msg::{self, Fields};
 
 /// The longest user name taken from `?author=` (it signs new comments).
 const MAX_AUTHOR_CHARS: usize = 200;
@@ -54,6 +81,12 @@ const MAX_OPEN_BYTES: u32 = 500 << 20;
 const MAX_TYPE_UNITS: u32 = 64;
 const MAX_NAME_UNITS: u32 = 4096;
 const MAX_ERROR_UNITS: u32 = 64 * 1024;
+/// Log batches, state snapshots and presence lists (JSON text).
+const MAX_JSON_UNITS: u32 = collab_msg::MAX_JSON_BYTES as u32;
+/// A person's name.
+const MAX_SHORT_UNITS: u32 = 1024;
+/// The most co-editing messages held for the app; past this the page has to rejoin.
+const MAX_COLLAB_QUEUE: usize = 4096;
 
 /// A message from the page, checked.
 enum FromPage {
@@ -61,6 +94,8 @@ enum FromPage {
     Open { name: String, bytes: Vec<u8> },
     /// `deckcraft:saved` / `deckcraft:saveFailed` (`&ack=1` only).
     Reply(Reply),
+    /// `deckcraft:collab:*`.
+    Collab(collab_msg::FromPage),
 }
 
 #[derive(Clone)]
@@ -79,6 +114,13 @@ pub struct Bridge {
     replies: Rc<RefCell<Vec<Reply>>>,
     /// The unsaved-changes state last reported to the parent.
     reported: Rc<Cell<Option<bool>>>,
+    /// Co-editing messages waiting for the app.
+    collab: Rc<RefCell<VecDeque<collab_msg::FromPage>>>,
+    /// The app, for handling co-editing messages as they arrive ([`Bridge::attach`]).
+    app: Rc<RefCell<Option<Weak<RefCell<SlideApp>>>>>,
+    /// Where this person is, as last told to the parent.
+    position: Rc<RefCell<String>>,
+    ctx: Rc<RefCell<Option<egui::Context>>>,
 }
 
 impl Bridge {
@@ -100,12 +142,17 @@ impl Bridge {
             opens: Rc::default(),
             replies: Rc::default(),
             reported: Rc::default(),
+            collab: Rc::default(),
+            app: Rc::default(),
+            position: Rc::default(),
+            ctx: Rc::default(),
         })
     }
 
     /// Save to the parent instead of downloading, send it Save As, Export and Print copies, and
     /// hear presentations from it.
     pub fn connect(&self, services: &mut Services, ctx: egui::Context) {
+        *self.ctx.borrow_mut() = Some(ctx.clone());
         self.listen(ctx);
         let bridge = self.clone();
         services.save_to_host = Some(Box::new(move |st: &DocState| bridge.post_presentation(st)));
@@ -127,21 +174,53 @@ impl Bridge {
     }
 
     pub fn post_ready(&self) {
-        self.send(&[("type", "deckcraft:ready".into()), ("version", env!("CARGO_PKG_VERSION").into()), ("ack", self.acks.is_some().into())]);
+        self.send(&[
+            ("type", "deckcraft:ready".into()),
+            ("version", env!("CARGO_PKG_VERSION").into()),
+            ("ack", self.acks.is_some().into()),
+            ("collab", true.into()),
+        ]);
     }
 
     pub fn post_failed(&self, error: &str) {
         self.send(&[("type", "deckcraft:failed".into()), ("error", error.into())]);
     }
 
-    /// After each frame: open what the page sent, settle saves it answered (with `&ack=1`) or
-    /// took (without), and tell it when unsaved changes appear or go away.
-    pub fn sync(&self, app: &mut SlideApp, ctx: &egui::Context) {
+    /// Handle co-editing messages as they arrive rather than at the next frame, so a hidden tab
+    /// (which draws none) keeps up with the others and answers checkpoint requests.
+    pub fn attach(&self, app: &Rc<RefCell<SlideApp>>) {
+        *self.app.borrow_mut() = Some(Rc::downgrade(app));
+    }
+
+    /// Co-editing messages now, if the app is free (presentations the page sent first are opened
+    /// first: a session starts on the file that came just before it).
+    fn sync_collab_now(&self) {
+        let Some(app) = self.app.borrow().as_ref().and_then(Weak::upgrade) else { return };
+        let Ok(mut app) = app.try_borrow_mut() else { return };
+        self.open_pending(&mut app);
+        self.sync_collab(&mut app);
+    }
+
+    fn open_pending(&self, app: &mut SlideApp) {
         let opens = std::mem::take(&mut *self.opens.borrow_mut());
         for (name, bytes) in opens {
             open(app, &name, &bytes);
+            self.repaint();
+        }
+    }
+
+    fn repaint(&self) {
+        if let Some(ctx) = self.ctx.borrow().as_ref() {
             ctx.request_repaint();
         }
+    }
+
+    /// After each frame: open what the page sent, settle saves it answered (with `&ack=1`) or
+    /// took (without), carry co-editing on, and tell the page when unsaved changes appear or go
+    /// away.
+    pub fn sync(&self, app: &mut SlideApp, ctx: &egui::Context) {
+        self.open_pending(app);
+        self.sync_collab(app);
         if let Some(acks) = &self.acks {
             let replies = std::mem::take(&mut *self.replies.borrow_mut());
             let mut settled: Vec<Settled<Arc<Presentation>>> = Vec::new();
@@ -176,6 +255,119 @@ impl Bridge {
         if self.reported.get() != Some(dirty) && self.send(&[("type", "deckcraft:dirty".into()), ("dirty", dirty.into())]) {
             self.reported.set(Some(dirty));
         }
+    }
+
+    /// Co-editing: the page's messages in order, then this person's place and next op.
+    fn sync_collab(&self, app: &mut SlideApp) {
+        let queued: Vec<collab_msg::FromPage> = self.collab.borrow_mut().drain(..).collect();
+        let mut changed = false;
+        for msg in queued {
+            match msg {
+                collab_msg::FromPage::Start { client, seq, read_only, user, state } => {
+                    // A checkpoint's snapshot is the shared presentation exactly; the .pptx read
+                    // back would number its slides afresh.
+                    let loaded = match &state {
+                        Some(snapshot) => app.session.collab_load_snapshot(snapshot),
+                        None => Ok(()),
+                    };
+                    match loaded.and_then(|()| app.session.collab_start(client, seq)) {
+                        Ok(()) => {
+                            app.session.collab_set_read_only(read_only);
+                            self.position.borrow_mut().clear();
+                            log::info!("co-editing as client {client} ({}) from log position {seq}", user.as_deref().unwrap_or("?"));
+                        }
+                        Err(e) => self.post_collab_error(&e.to_string()),
+                    }
+                    changed = true;
+                }
+                collab_msg::FromPage::Entries(entries) => {
+                    for entry in entries {
+                        if let Err(e) = app.session.collab_receive(entry) {
+                            app.session.collab_stop();
+                            self.post_collab_error(&e.to_string());
+                            break;
+                        }
+                        changed = true;
+                    }
+                }
+                collab_msg::FromPage::Checkpoint { id } => self.post_checkpoint(app, id),
+                collab_msg::FromPage::Stop => {
+                    app.session.collab_stop();
+                    changed = true;
+                }
+                collab_msg::FromPage::Presence(people) => {
+                    app.session.collab_set_others(people);
+                    changed = true;
+                }
+            }
+        }
+        if !app.session.collab_active() {
+            return;
+        }
+        let json = app.session.collab_presence().to_string();
+        if *self.position.borrow() != json && self.send(&[("type", "deckcraft:collab:selection".into()), ("json", json.as_str().into())]) {
+            *self.position.borrow_mut() = json;
+        }
+        if let Some(out) = app.session.collab_outgoing() {
+            match serde_json::to_string(&out) {
+                Ok(json) => {
+                    self.send(&[("type", "deckcraft:collab:op".into()), ("json", json.into())]);
+                }
+                Err(e) => self.post_collab_error(&e.to_string()),
+            }
+        }
+        if let Some(notice) = app.session.collab_take_notice() {
+            app.notify(notice);
+            changed = true;
+        }
+        if changed {
+            self.repaint();
+        }
+    }
+
+    /// The shared presentation as everyone has it, for the page to save as the session's
+    /// checkpoint: in the opened file's format, with its state snapshot.
+    fn post_checkpoint(&self, app: &mut SlideApp, id: u64) {
+        let target =
+            app.session.documents().iter().find(|d| app.session.collab_shares(d.uid)).map(|d| acks::save_target(d.path.as_deref(), &d.title()));
+        let data = match (target, app.session.collab_snapshot(), app.session.collab_confirmed()) {
+            (Some((name, format)), Some(snapshot), Some((_, doc))) => {
+                Some(snapshot.and_then(|(seq, state)| Ok((seq, state, deckcraft_engine::cmd::file::save_bytes(doc, format)?, name))))
+            }
+            _ => None,
+        };
+        let (seq, state, bytes, name) = match data {
+            Some(Ok(data)) => data,
+            Some(Err(e)) => {
+                // Not a reason to rejoin: the page's save fails and is tried again later.
+                log::error!("co-editing: couldn't write the shared presentation: {e}");
+                app.notify(format!("Couldn't save the shared presentation: {e}"));
+                return;
+            }
+            None => {
+                self.post_collab_error("no shared presentation to save");
+                return;
+            }
+        };
+        let buffer = js_sys::Uint8Array::from(bytes.as_slice()).buffer();
+        let fields = [
+            ("type", "deckcraft:collab:checkpointData".into()),
+            ("id", JsValue::from_f64(id as f64)),
+            ("seq", JsValue::from_f64(seq as f64)),
+            ("name", name.as_str().into()),
+            ("state", state.as_str().into()),
+            ("bytes", buffer.clone().into()),
+        ];
+        if let Some(m) = message(&fields)
+            && self.parent.post_message_with_transfer(&m, &self.origin, &js_sys::Array::of1(&buffer)).is_err()
+        {
+            log::error!("couldn't hand the checkpoint to the page");
+        }
+    }
+
+    fn post_collab_error(&self, error: &str) {
+        log::error!("co-editing: {error}");
+        self.send(&[("type", "deckcraft:collab:error".into()), ("error", error.into())]);
     }
 
     /// The app's `save_to_host`: hand the presentation to the parent in the format of the file it
@@ -250,6 +442,30 @@ impl Bridge {
                 Reply::parse(&kind, number(data, "id"), string(data, "name", MAX_NAME_UNITS), string(data, "error", MAX_ERROR_UNITS))
                     .map(FromPage::Reply)
             }
+            _ if kind.starts_with("deckcraft:collab:") => {
+                let flag = |key: &str| js_sys::Reflect::get(data, &JsValue::from_str(key)).ok().and_then(|v| v.as_bool());
+                let fields = Fields {
+                    client: number(data, "client"),
+                    client_id: number(data, "clientId"),
+                    seq: number(data, "seq"),
+                    id: number(data, "id"),
+                    read_only: flag("readOnly"),
+                    json: string(data, "json", MAX_JSON_UNITS),
+                    user: string(data, "user", MAX_SHORT_UNITS),
+                    state: string(data, "state", MAX_JSON_UNITS),
+                };
+                if present(data, "state") && fields.state.is_none() {
+                    self.post_collab_error(&format!("{kind}: `state` must be text of at most {MAX_JSON_UNITS} characters"));
+                    return None;
+                }
+                match collab_msg::parse(&kind, fields)? {
+                    Ok(msg) => Some(FromPage::Collab(msg)),
+                    Err(e) => {
+                        self.post_collab_error(&e);
+                        None
+                    }
+                }
+            }
             _ => None,
         }
     }
@@ -269,6 +485,20 @@ impl Bridge {
                 if replies.len() < MAX_REPLIES {
                     replies.push(reply);
                 }
+            }
+            FromPage::Collab(msg) => {
+                let full = {
+                    let mut queue = self.collab.borrow_mut();
+                    let full = queue.len() >= MAX_COLLAB_QUEUE;
+                    if !full {
+                        queue.push_back(msg);
+                    }
+                    full
+                };
+                if full {
+                    self.post_collab_error("too many messages waiting; rejoin");
+                }
+                self.sync_collab_now();
             }
         }
     }

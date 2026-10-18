@@ -116,6 +116,30 @@ still waiting count as stored too, and a late answer to one of them changes noth
 page that leaves more than 64 saves unanswered has the oldest counted as failed. A SlideLogic that
 doesn't know the flag answers `deckcraft:ready` without `ack: true`.
 
+## Co-editing
+
+Several people can edit one presentation at once (`docs/co-editing.md`). The page runs the session
+with a server that numbers everyone's edits (for Nextcloud, `../deckcraft-nextcloud`); SlideLogic
+does all the merging. `deckcraft:ready` says `collab: true` when the build can co-edit. The
+messages follow WordLogic's, with the `deckcraft:` prefix:
+
+| Message | Direction | Fields |
+|---|---|---|
+| `deckcraft:collab:start` | from the page | `client` (or `clientId`, nonzero), `seq`; optional `readOnly`, `user`, `color`, `state`. Sent after `deckcraft:open`: the presentation just opened is the shared one as of log position `seq`. With `state` (a checkpoint's snapshot) the snapshot is, and replaces the file just opened, since a `.pptx` read back numbers its slides afresh. `readOnly`: this person follows but can't edit |
+| `deckcraft:collab:entries` | from the page | `json`: the server's log entries in order, `[{seq, client, client_seq, base, op}]`, `op` passed through untouched |
+| `deckcraft:collab:op` | to the page | `json`: this person's next op, `{client, client_seq, base, op}`. The next one comes once this one is back in the log |
+| `deckcraft:collab:checkpoint` | from the page | `id`: hand over the shared presentation to save |
+| `deckcraft:collab:checkpointData` | to the page | `id`, `seq`, `name`, `bytes` (a transferred `ArrayBuffer`, the presentation as everyone has it, in the opened file's format), `state` (text: the snapshot for people who join from this save) |
+| `deckcraft:collab:selection` | to the page | `json`: where this person is, `{slide, shapes}` (slide id, selected shape ids; `slide` is null in the master views), whenever it changes |
+| `deckcraft:collab:presence` | from the page | `json`: the others, `[{client, name, color, slide, shapes}]`; their selected shapes are outlined on the slide in `color` (`#rrggbb`) with their `name`, and the slide's thumbnail shows their initials |
+| `deckcraft:collab:stop` | from the page | the session ended; the presentation stays open, unshared |
+| `deckcraft:collab:error` | to the page | `error`: this copy can't follow the log (an entry missing, a message it couldn't read) and must rejoin |
+
+While shared, Undo and Redo take back only this person's own edits, and a view-only person's
+edits are refused with a message. Co-editing messages are handled as they arrive, not at the next
+frame, so a tab in the background keeps up and answers checkpoint requests. Log batches, snapshots
+and presence lists are limited to 512 MB of text each.
+
 ## Renderer selection and fallback flags
 
 SlideLogic renders with wgpu. It uses **WebGPU** when the browser has it and falls back to

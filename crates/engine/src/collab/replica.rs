@@ -34,10 +34,11 @@ use crate::Result;
 const LOG_KEEP: usize = 4096;
 /// Undo steps kept.
 const UNDO_KEEP: usize = 100;
+/// Edits joined into one undo step at most; the next starts a new step.
+const STEP_OPS: usize = 500;
 
 /// An op on its way to the server.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Outgoing {
     pub client: u64,
     /// This client's count of its ops, so the echo can be matched.
@@ -49,7 +50,6 @@ pub struct Outgoing {
 
 /// A log entry from the server.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Incoming {
     pub seq: u64,
     pub client: u64,
@@ -65,10 +65,11 @@ struct Inflight {
     current: Op,
 }
 
-/// An undo or redo step: the op that takes an edit back, and the edit's name.
+/// An undo or redo step: the ops that take an edit back, applied in order (a run of typing is
+/// one step of several), and the edit's name.
 #[derive(Clone, Debug)]
 struct Step {
-    op: Op,
+    ops: Vec<Op>,
     label: String,
 }
 
@@ -158,9 +159,10 @@ impl Replica {
 
     /// This person's edit, which turned `before` into `after` (what they see now): its inverse
     /// goes on the undo stack. The edit itself goes to the others with the next
-    /// [`Replica::outgoing`]. False when it changed nothing the others see (no undo step). An
-    /// error means the edit can't be shared: take it back.
-    pub fn local(&mut self, before: &Presentation, after: &Presentation, label: &str) -> Result<bool> {
+    /// [`Replica::outgoing`]. `join`: it carries on the last undo step (a run of typing). False
+    /// when it changed nothing the others see (no undo step). An error means the edit can't be
+    /// shared: take it back.
+    pub fn local(&mut self, before: &Presentation, after: &Presentation, label: &str, join: bool) -> Result<bool> {
         let (lo, hi) = self.ids;
         if !(lo..hi).contains(&after.next_id) {
             return Err(refused("this edit can't be shared: there are no more ids for new slides and shapes in this session"));
@@ -170,7 +172,15 @@ impl Replica {
             return Ok(false);
         }
         self.redo.clear();
-        self.undo.push(Step { op: inverse, label: label.to_string() });
+        if join
+            && let Some(top) = self.undo.last_mut()
+            && top.ops.len() < STEP_OPS
+        {
+            // Taken back first, then what the step had.
+            top.ops.insert(0, inverse);
+            return Ok(true);
+        }
+        self.undo.push(Step { ops: vec![inverse], label: label.to_string() });
         if self.undo.len() > UNDO_KEEP {
             self.undo.remove(0);
         }
@@ -183,11 +193,13 @@ impl Replica {
         let stack = if redo { &mut self.redo } else { &mut self.undo };
         let Some(step) = stack.pop() else { return Ok(None) };
         let mut next = (**shown).clone();
-        apply(&mut next, &step.op)?;
+        for op in &step.ops {
+            apply(&mut next, op)?;
+        }
         let back = capture(&next, shown)?;
         let applied = capture(shown, &next)?;
         *shown = Arc::new(next);
-        let back = Step { op: back, label: step.label };
+        let back = Step { ops: vec![back], label: step.label };
         if redo {
             self.undo.push(back);
         } else {
@@ -300,7 +312,9 @@ impl Replica {
         };
         let theirs = rebase(&theirs, &unsent, true);
         for s in self.undo.iter_mut().chain(self.redo.iter_mut()) {
-            s.op = rebase(&s.op, &theirs, true);
+            for op in s.ops.iter_mut() {
+                *op = rebase(op, &theirs, true);
+            }
         }
         let mut next = (**shown).clone();
         let result = match apply(&mut next, &theirs) {
