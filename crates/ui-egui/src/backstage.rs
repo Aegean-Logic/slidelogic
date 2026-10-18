@@ -591,8 +591,17 @@ fn recent_list(app: &mut SlideApp, ui: &mut Ui, query: &str, limit: usize) {
     }
     let width = ui.available_width().min(CONTENT_W);
     for path in list {
-        let missing = !app.recent_exists(&path);
-        let (name, folder) = split_path(&path);
+        // A copy of a Nextcloud file reopens from Nextcloud (its newest version, shared with
+        // whoever has it open), and says where it is there.
+        let remote = app.services.cloud.as_ref().filter(|c| c.files).and_then(|c| c.location_of(&path));
+        let missing = remote.is_none() && !app.recent_exists(&path);
+        let (name, folder) = match &remote {
+            Some(r) => {
+                let (folder, name) = r.rsplit_once('/').unwrap_or(("", r.as_str()));
+                (name.to_string(), if folder.is_empty() { "Nextcloud".to_string() } else { format!("Nextcloud › {folder}") })
+            }
+            None => split_path(&path),
+        };
         let (rect, resp) = ui.allocate_exact_size(vec2(width, 44.0), Sense::click());
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
         let p = ui.painter();
@@ -629,7 +638,10 @@ fn recent_list(app: &mut SlideApp, ui: &mut Ui, query: &str, limit: usize) {
             app.forget_recent(&path);
         }
         if resp.clicked() {
-            app.open_path_in_background(&path);
+            match &remote {
+                Some(r) => crate::cloud_files::open_remote(app, r),
+                None => app.open_path_in_background(&path),
+            }
         }
     }
 }
@@ -767,10 +779,18 @@ fn new_page(app: &mut SlideApp, ui: &mut Ui, bs: &mut Backstage) {
 /// Open: Recent and Browse on the left; the recent presentations (with a search box) on the right.
 fn open_page(app: &mut SlideApp, ui: &mut Ui, bs: &mut Backstage) {
     let t = Tokens::get(ui.ctx());
+    let cloud = crate::cloud_files::available(app);
+    let in_cloud = cloud && app.cloud_files.open_here;
+    let mut account = false;
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.set_width(230.0);
-            place_row(ui, Icon::Recent, "Recent", true, 220.0);
+            if place_row(ui, Icon::Recent, "Recent", !in_cloud, 220.0).clicked() {
+                app.cloud_files.open_here = false;
+            }
+            if cloud && place_row(ui, Icon::Cloud, "Nextcloud", in_cloud, 220.0).on_hover_text("Open a presentation from Nextcloud").clicked() {
+                app.cloud_files.open_here = true;
+            }
             if place_row(ui, Icon::OpenFolder, "Browse", false, 220.0).on_hover_text("Open a presentation from a folder (Ctrl+O)").clicked() {
                 let _ = app.run("app.openDialog", json!({}));
             }
@@ -791,6 +811,10 @@ fn open_page(app: &mut SlideApp, ui: &mut Ui, bs: &mut Backstage) {
         ui.painter().line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.0, t.separator));
         ui.add_space(24.0);
         ui.vertical(|ui| {
+            if in_cloud {
+                account = crate::cloud_files::open_section(app, ui);
+                return;
+            }
             search(ui, &mut bs.query, "Search for a file", 380.0);
             ui.add_space(12.0);
             heading(ui, "Presentations");
@@ -798,6 +822,9 @@ fn open_page(app: &mut SlideApp, ui: &mut Ui, bs: &mut Backstage) {
             recent_list(app, ui, &q, usize::MAX);
         });
     });
+    if account {
+        bs.go(Page::Account);
+    }
 }
 
 /// Info: the presentation's name and location, Inspect and Manage on the left, its properties
@@ -958,6 +985,12 @@ fn save_as(app: &mut SlideApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcom
     ui.add_space(8.0);
     if let Some((_, _, detail)) = SAVE_TYPES.iter().find(|s| s.0 == bs.file_type) {
         dim(ui, detail);
+    }
+    if crate::cloud_files::available(app) {
+        ui.add_space(24.0);
+        if crate::cloud_files::save_as_section(app, ui) {
+            out.page = Some(Page::Account);
+        }
     }
 }
 
@@ -1347,8 +1380,12 @@ fn account(app: &mut SlideApp, ui: &mut Ui) {
                 }
             });
             ui.add_space(16.0);
-            heading(ui, "User Information");
-            dim(ui, "SlideLogic has no accounts: there is nothing to sign in to, and your presentations stay on your device.");
+            if crate::cloud_files::available(app) {
+                crate::cloud_files::account_section(app, ui);
+            } else {
+                heading(ui, "User Information");
+                dim(ui, "SlideLogic has no accounts: there is nothing to sign in to, and your presentations stay on your device.");
+            }
         });
         ui.add_space(40.0);
         ui.vertical(|ui| {

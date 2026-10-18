@@ -9,6 +9,8 @@
 pub mod animtimeline;
 pub mod backstage;
 pub mod canvas;
+pub mod cloud;
+pub mod cloud_files;
 pub mod control;
 pub mod credits;
 pub mod dialogs;
@@ -236,6 +238,9 @@ pub struct Services {
     pub clipboard_set_html: Option<Box<dyn FnMut(&str, &str) -> bool>>,
     /// Audio output for media playback (cpal on desktop); without one media plays silently.
     pub audio_out: Option<Box<dyn deckcraft_media::AudioOut>>,
+    /// The host's cloud (Nextcloud, on the desktop): the File view's Nextcloud places use it
+    /// ([`cloud_files`]).
+    pub cloud: Option<cloud::Cloud>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,6 +496,8 @@ pub struct SlideApp {
     /// slides and status bar until Esc or Back; with nothing open it is the start screen. Opening,
     /// creating or closing a presentation leaves it.
     pub backstage: Option<backstage::Backstage>,
+    /// The File view's Nextcloud places, and conflicts and problems the host reports.
+    pub cloud_files: cloud_files::CloudFiles,
     pending_urls: Vec<String>,
     /// Text for the system clipboard from a Copy or Cut command, handed over on the next frame.
     pending_copy: Option<String>,
@@ -588,6 +595,7 @@ impl SlideApp {
             ui_fonts: uifonts::UiFonts::default(),
             thumb_drag: None,
             selpane: selpane::State::default(),
+            cloud_files: cloud_files::CloudFiles::default(),
             doc_window: None,
             sorter: sorter::State::default(),
             slides_focused: false,
@@ -1568,6 +1576,7 @@ impl SlideApp {
         self.last_time = now;
         self.drain_control(ctx);
         self.poll_opening();
+        cloud_files::poll(self);
         if self.fonts_ready {
             self.drain_inbox();
         }
@@ -1864,6 +1873,7 @@ impl SlideApp {
         });
         toast::note_missing_fonts(self);
         toast::show(self, &ctx);
+        cloud_files::show(self, &ctx);
         dialogs::show(self, &ctx);
         menus::palette(self, &ctx);
         for url in std::mem::take(&mut self.pending_urls) {
@@ -2045,6 +2055,8 @@ fn js_now() -> f64 {
 mod animpane_tests;
 #[cfg(test)]
 mod browsetheme_tests;
+#[cfg(test)]
+mod cloud_files_tests;
 #[cfg(test)]
 mod compare_tests;
 #[cfg(test)]

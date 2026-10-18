@@ -277,6 +277,7 @@ icons! {
     CommentsBubble => "comments-bubble",
     File => "file",
     Folder => "folder",
+    Cloud => "cloud",
     Export => "export",
     Print => "print",
     Settings => "settings",
@@ -2238,6 +2239,13 @@ fn draw(p: &Pen<'_>, icon: Icon) {
         I::Folder => {
             p.rshape(&[(2.5, 4.5), (9.0, 4.5), (11.0, 7.0), (21.5, 7.0), (21.5, 19.5), (2.5, 19.5)], 1.2, t(Y), K);
             p.rshape(&[(2.5, 10.0), (21.5, 10.0), (21.5, 19.5), (2.5, 19.5)], 1.2, Y.a(0.6), K);
+        }
+        I::Cloud => {
+            // Three bumps over a flat base: left, top, right.
+            let mut pts = arc_pts((7.5, 15.0), 4.0, 4.0, 90.0, 270.0);
+            pts.extend(arc_pts((12.5, 10.5), 5.5, 5.5, 200.0, 340.0));
+            pts.extend(arc_pts((17.5, 14.5), 4.5, 4.5, 270.0, 450.0));
+            p.shape(&pts, N, K);
         }
         I::Export => {
             p.rline(&[(15.0, 8.5), (15.0, 2.5), (3.0, 2.5), (3.0, 21.5), (15.0, 21.5), (15.0, 15.5)], 1.5, K);
