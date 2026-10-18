@@ -19,6 +19,9 @@
 - **Saving:** the member with the lowest client id saves the shared presentation to the file every
   20 edits or 30 seconds, and on Save, with a state snapshot for people joining later. A file
   changed outside the session (another app, a sync client) ends it with a message.
+- **Shared links** (`/s/{token}`, Nextcloud app 0.3.0): a link to a presentation opens it in
+  SlideLogic. Edit links co-edit as guests under the name they gave Nextcloud; view-only links
+  follow live. Presentations in a shared folder's link open the same way.
 
 Checked end to end in the test Nextcloud (2026-10-18): two tabs on one .pptx, then a third
 joining late from the checkpoint snapshot. New slides made in each tab, and at once in both,
@@ -26,8 +29,18 @@ arrived in the others; all three copies ended with the same presentation (the sa
 `presentation.json` but for each copy's own id counter). Undo in one tab took back only its own
 slide; the file was saved at the checkpoint with its snapshot; another tab's selection showed
 outlined with its name; a write to the file from outside ended the session with the message.
-View-only members are covered by tests (engine and server) but weren't tried live: the test
-Nextcloud has a single user.
+Then shared links: gaz in the editor, a guest on an edit link and a guest on a view-only link to
+the same file, and later a guest opening it from a link to its folder, all in one session. The
+guests' new slides (file link and folder link) reached everyone, and the view-only guest
+followed live; their New Slide was refused with "You can view this presentation but not edit
+it." and nothing was sent. Paths out of the shared folder, missing files and unknown tokens
+answered 404. A view-only member signed in with their own account (a read-only user share) takes
+the same path (`canEdit` false from the server) but wasn't tried live: that needs a second
+account in the test Nextcloud.
+
+Found on the way: a tab loaded in the background crashed SlideLogic when the session's first
+messages arrived before its first frame (egui has no fonts until then). The bridge now holds
+co-editing messages until the first frame; such a tab joins when it's first shown.
 
 Phase 2–3 pieces:
 
@@ -165,8 +178,8 @@ Known limits, accepted for now:
 2. **Done (2026-10-18).** The session hook, the bridge and the Nextcloud sequencer; joining from
    a checkpoint snapshot; presence (who's on which slide, others' selections).
 3. **Done (2026-10-18)**, but for the desktop app: own-edit undo through the session, view-only
-   members, checkpoints written by one member. Still to do: the desktop app joining the same
-   session (GridLogic's and WordLogic's `nextcloud/coedit.rs`), shared links.
+   members, checkpoints written by one member, shared links (files and folders). Still to do:
+   the desktop app joining the same session (GridLogic's and WordLogic's `nextcloud/coedit.rs`).
 4. Text merging inside one shape (WordLogic's flat sequence); per-shape merging inside masters
    and layouts; per-property merging of one shape; a WebSocket transport.
 
@@ -174,6 +187,7 @@ Known limits, accepted for now:
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | Shared links (files, folders) checked end to end; a background tab no longer crashes before its first frame; view-only refusals read plainly |
 | 2026-10-18 | Phases 2–3 built: session hook, presence, web bridge, Nextcloud sequencer; checked end to end; status, joining, limits and phases updated |
 | 2026-10-18 | Phase 1 built: `collab` module, replica, ids, fuzz; status, decisions, limits and phases updated |
 | 2026-10-17 | Design (not started) |
