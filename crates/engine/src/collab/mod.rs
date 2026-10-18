@@ -18,9 +18,12 @@
 
 mod replica;
 mod seq;
+mod shared;
 
 pub use replica::{Incoming, Outgoing, Replica, Shown};
 pub use seq::SeqEdit;
+pub use shared::{MAX_SNAPSHOT_BYTES, Other};
+pub(crate) use shared::{READ_ONLY, Shared};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;

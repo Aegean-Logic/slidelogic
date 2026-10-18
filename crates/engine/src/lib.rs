@@ -477,6 +477,8 @@ pub struct Session {
     /// Presentations a host read off the UI thread, waiting for `file.adopt` (by token).
     loaded: Vec<(u64, cmd::file::LoadedFile)>,
     next_loaded: u64,
+    /// The presentation shared with others in a co-editing session (`collab`).
+    pub(crate) collab: Option<Box<collab::Shared>>,
 }
 
 impl Default for Session {
@@ -508,6 +510,7 @@ impl Session {
             panics_caught: 0,
             loaded: vec![],
             next_loaded: 0,
+            collab: None,
         }
     }
     /// Hand over a presentation read on another thread ([`cmd::file::read_presentation_file`]);
@@ -591,6 +594,15 @@ impl Session {
         if self.depth == 0 && (spec.journal || spec.undoable) && !matches!(id, "text.compose" | "text.commit") {
             self.end_composition();
         }
+        // Co-editing: what changed before (a gesture) is an edit of its own, and a view-only person
+        // can't edit the shared presentation.
+        let shared = self.depth == 0 && self.active().is_some_and(|d| self.collab_shares(d.uid));
+        if shared {
+            self.collab_flush();
+            if spec.undoable && self.collab_read_only() {
+                return Err(EngineError::Disabled(id.into(), collab::READ_ONLY.into()));
+            }
+        }
         if let Err(e) = (spec.enabled)(self) {
             let named = (e == cmd::NOTHING_SELECTED || e == cmd::SELECT_TWO) && (params.get("ids").is_some() || params.get("id").is_some());
             if !named {
@@ -630,6 +642,9 @@ impl Session {
             && outer
         {
             push_undo(st, HistoryEntry { label: spec.label.to_string(), doc: old, selection: sel });
+        }
+        if shared {
+            self.collab_flush();
         }
         if spec.journal && outer {
             self.journal.push((id.to_string(), params.clone()));
