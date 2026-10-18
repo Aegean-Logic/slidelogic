@@ -1,14 +1,46 @@
 # Real-time co-editing: design
 
-> **Status (2026-10-18):** phase 1 done: ops, replay and convergence in the engine
-> (`crates/engine/src/collab/`). Nothing reaches the user yet: the bridge messages, the
-> Nextcloud sequencer and the session hook are phase 2. Until then two people saving the same
-> file are kept apart by the Nextcloud app's ETag check (the second save is refused, nothing is
-> lost). Fork-specific (Aegean Office), not upstream behaviour. GridLogic
-> (`../gridcraft/docs/co-editing.md`) and WordLogic (`../wordcraft/docs/co-editing.md`) have the
-> whole thing; SlideLogic follows them.
+> **Status (2026-10-18):** phases 1–3 done. Everyone with a presentation open from Nextcloud
+> (`../deckcraft-nextcloud` 0.2.0) edits it together, live, in the browser. Fork-specific (Aegean
+> Office), not upstream behaviour. GridLogic (`../gridcraft/docs/co-editing.md`) and WordLogic
+> (`../wordcraft/docs/co-editing.md`) work the same way; SlideLogic follows them.
 
 ## Where it stands
+
+- **Edits:** every edit, from the ribbon, keys, pointer gestures or agents, shows in the others'
+  copies within about a second: new, deleted and moved slides, shapes, formatting, text,
+  transitions and animations, design changes.
+- **Presence:** the shapes each person has selected are outlined on the slide in their colour
+  with their name; their initials show on the thumbnail of the slide they're on; a strip above
+  the editor lists who's editing.
+- **Undo and Redo** take back a person's own edits only, never someone else's later change.
+- **View-only members** (they can read the file but not write it) follow the others live; an
+  edit they try is refused with a message, and the server refuses it too.
+- **Saving:** the member with the lowest client id saves the shared presentation to the file every
+  20 edits or 30 seconds, and on Save, with a state snapshot for people joining later. A file
+  changed outside the session (another app, a sync client) ends it with a message.
+
+Checked end to end in the test Nextcloud (2026-10-18): two tabs on one .pptx, then a third
+joining late from the checkpoint snapshot. New slides made in each tab, and at once in both,
+arrived in the others; all three copies ended with the same presentation (the same
+`presentation.json` but for each copy's own id counter). Undo in one tab took back only its own
+slide; the file was saved at the checkpoint with its snapshot; another tab's selection showed
+outlined with its name; a write to the file from outside ended the session with the message.
+View-only members are covered by tests (engine and server) but weren't tried live: the test
+Nextcloud has a single user.
+
+Phase 2–3 pieces:
+
+| Piece | Code | Proof |
+|---|---|---|
+| Session hook | `collab/shared.rs`: `Session::collab_start`, `collab_outgoing`, `collab_receive`, `collab_presence`, `collab_set_others`, `collab_snapshot`, `collab_load_snapshot`, `collab_set_read_only` | After every outermost command, and whenever the host asks for the next op, the presentation is compared with the one last shared and the difference recorded as this person's edit, so nothing has to call in. A new undo step starts when the session's own history got one (so steps match SlideLogic's undo without co-editing). Mid-gesture (a drag) or mid-composition nothing goes out; an op arriving then is applied to the gesture's base too, and the gesture goes out whole, as one step. The fuzz runs through this hook (150 seeds × 1,500 steps pass); tests for view-only members, typing, presence, a drag interrupted by a remote op, a late joiner from a snapshot |
+| Undo | `cmd::edit` `undo`/`redo` and `can_undo`/`can_redo` defer to `Session::collab_undo` for the shared presentation | Snapshot undo would take back everyone's edits since |
+| State snapshots | `Session::collab_snapshot` (the native format, base64) | A .pptx read back numbers slides afresh, so joiners start from the snapshot: `a_late_joiner_starts_from_the_checkpoint_snapshot` |
+| Presence | `ui-egui/presence.rs` (canvas outlines and name tags, thumbnail initials) | `presence::tests` |
+| Bridge | `apps/deckcraft-web/src/host.rs`, `collab_msg.rs`; protocol in `packaging/web/README.md`, Co-editing | Messages checked natively (`collab_msg` tests); handled as they arrive, so a background tab keeps up and answers checkpoints |
+| Sequencer | `../deckcraft-nextcloud`: `CollabController`, `CollabService`, `SnapshotStore`, migration, `CleanUpSessions`, `src/collab.js` | WordLogic's, ported; end to end above |
+
+Phase 1 pieces:
 
 | Piece | Code | Proof |
 |---|---|---|
@@ -89,9 +121,12 @@ transitions and design changes are all results.
 - **Undo is each person's own:** `Replica::local` keeps each edit's inverse (the diff back); it is
   rebased over the others' ops as they arrive (theirs win where both changed the same thing),
   and undoing sends it like any edit.
-- **Joining** (phase 2): load the last checkpoint plus the ops after it. A .pptx renumbers slide
-  ids, so a joiner needs the checkpoint as the replica's confirmed presentation (the native
-  format, or a snapshot as WordLogic keeps), not the re-read .pptx.
+- **Joining:** a joiner loads the file, joins at the last checkpoint's log position and replays
+  the entries after it. A .pptx read back numbers slides afresh, so when the checkpoint kept a
+  state snapshot (the shared presentation in SlideLogic's native format, base64) the joiner
+  takes that instead of the file it just opened. The page always fetches the file past the
+  browser's cache: Nextcloud sends no `Cache-Control`, and a stale copy's old ETag made a joiner
+  retry forever.
 
 Known limits, accepted for now:
 - One person typing in a text box while another changes the same shape: the later change wins
@@ -103,35 +138,42 @@ Known limits, accepted for now:
   of the same slide the "wrong" one may win. The session hook could pass the selection as a hint.
 - Ranges repeat 1,024 clients apart (client ids grow by one per join), and a client that makes
   more than 2²⁰ ids in a session is refused further growth with a message.
-- Some commands restore a snapshot from the local undo history (live previews). In a shared
-  session the hook (phase 2) has to route Undo and Redo to the replica and keep these from
-  taking back others' edits.
+- Only Undo and Redo read the session's snapshot history, and in a shared presentation they go to
+  the replica, so no command takes back others' edits by restoring a snapshot.
+- A snapshot over 128 MB (a very picture-heavy deck) isn't kept by the server; people joining
+  from that save start from the .pptx, whose slide ids don't match the log's, and their copy
+  would drift. Keep such presentations to one editor at a time.
+- When the file changes outside the session, the member writing checkpoints stops at once; the
+  others stop when their turn to write comes (within about a minute), as in WordLogic.
+- The presentation shows as unsaved in the title until the next checkpoint.
 
 ## 4. Where the code goes
 
 - `crates/engine/src/collab/`: `mod.rs` (op, capture, apply, rebase, normalize, ids), `seq.rs`
-  (order edits), `replica.rs` (one person's copy), `tests.rs` (scenarios and the fuzz). Done.
-- `Session::collab_*` (phase 2): run every command through the replica (`local` after the
-  outermost command, Undo and Redo to `Replica::undo`, refusals as a status message), as
-  WordLogic's `collab/shared.rs`.
-- `apps/deckcraft-web/src/host.rs`: the `deckcraft:collab*` messages, as GridLogic's bridge.
-- `../deckcraft-nextcloud`: the sequencer (`CollabController`, `CollabService`, tables) and
-  presence, ported from WordLogic for Nextcloud.
+  (order edits), `replica.rs` (one person's copy), `shared.rs` (the session hook), `tests.rs`
+  (scenarios and the fuzz).
+- `crates/ui-egui/src/presence.rs`: the others on the canvas and the thumbnails.
+- `apps/deckcraft-web/src/host.rs`, `collab_msg.rs`: the `deckcraft:collab:*` messages.
+- `../deckcraft-nextcloud`: the sequencer (`CollabController`, `CollabService`, `SnapshotStore`,
+  tables, clean-up job) and the page (`src/collab.js`), ported from WordLogic.
 
 ## 5. Phases
 
 1. **Done (2026-10-18).** Ops and replay in the engine, collision-free ids, the replica with
    own-edit undo, and the convergence fuzz (two or three people, random commands, same final
    presentation, .pptx round trip).
-2. The session hook, the bridge and the Nextcloud sequencer; joining from a checkpoint;
-   presence (who's on which slide, others' selections).
-3. View-only members, checkpoints written by one member, the desktop app.
+2. **Done (2026-10-18).** The session hook, the bridge and the Nextcloud sequencer; joining from
+   a checkpoint snapshot; presence (who's on which slide, others' selections).
+3. **Done (2026-10-18)**, but for the desktop app: own-edit undo through the session, view-only
+   members, checkpoints written by one member. Still to do: the desktop app joining the same
+   session (GridLogic's and WordLogic's `nextcloud/coedit.rs`), shared links.
 4. Text merging inside one shape (WordLogic's flat sequence); per-shape merging inside masters
-   and layouts; per-property merging of one shape.
+   and layouts; per-property merging of one shape; a WebSocket transport.
 
 ## Revision history
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | Phases 2–3 built: session hook, presence, web bridge, Nextcloud sequencer; checked end to end; status, joining, limits and phases updated |
 | 2026-10-18 | Phase 1 built: `collab` module, replica, ids, fuzz; status, decisions, limits and phases updated |
 | 2026-10-17 | Design (not started) |
