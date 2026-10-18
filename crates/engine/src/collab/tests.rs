@@ -488,6 +488,102 @@ fn someone_elses_edit_during_a_drag_stays() {
     assert_eq!((x.x, x.y), (600.0, 380.0));
 }
 
+/// The text of slide `slide`'s shape `id`.
+fn text_of(p: &Person, slide: usize, id: ShapeId) -> String {
+    p.doc().slides[slide].shape(id).and_then(|s| s.text.as_ref()).map(|t| t.text()).unwrap_or_default()
+}
+
+#[test]
+fn typing_in_one_text_box_at_once_keeps_both() {
+    let mut server = Server::default();
+    let mut all = people(2);
+    go_to(&mut all[0], 0);
+    go_to(&mut all[1], 0);
+    let id = shapes_on(&all[0], 0)[0].id;
+    let was = text_of(&all[0], 0, id);
+    all[0].run("text.edit", &json!({"id": id.0, "end": true}));
+    all[1].run("text.edit", &json!({"id": id.0, "at": [0, 0]}));
+    all[0].run("text.insert", &json!({"text": " by Ann"}));
+    all[1].run("text.insert", &json!({"text": "Bob's "}));
+    settle(&mut server, &mut all);
+    assert_same(&all, "two people typing in one box");
+    assert_eq!(text_of(&all[0], 0, id), format!("Bob's {was} by Ann"));
+    // Each one's caret stayed with their own text: typing on lands next to it.
+    all[0].run("text.insert", &json!({"text": "!"}));
+    all[1].run("text.insert", &json!({"text": "new "}));
+    settle(&mut server, &mut all);
+    assert_same(&all, "typing on");
+    assert_eq!(text_of(&all[1], 0, id), format!("Bob's new {was} by Ann!"));
+}
+
+#[test]
+fn moving_a_box_while_someone_types_in_it_keeps_both() {
+    let mut server = Server::default();
+    let mut all = people(2);
+    go_to(&mut all[0], 0);
+    go_to(&mut all[1], 0);
+    let id = shapes_on(&all[0], 0)[0].id;
+    let was = text_of(&all[0], 0, id);
+    all[0].run("shape.move", &json!({"ids": [id.0], "dx": 40, "dy": 0}));
+    let moved = all[0].doc().slides[0].shape(id).unwrap().xfrm;
+    all[1].run("text.edit", &json!({"id": id.0, "end": true}));
+    all[1].run("text.insert", &json!({"text": ", typed"}));
+    // Either order in the log: the move and the typing both stay.
+    for first in [0, 1] {
+        let mut server = Server::default();
+        let mut pair = people(2);
+        for p in pair.iter_mut() {
+            go_to(p, 0);
+        }
+        pair[0].run("shape.move", &json!({"ids": [id.0], "dx": 40, "dy": 0}));
+        pair[1].run("text.edit", &json!({"id": id.0, "end": true}));
+        pair[1].run("text.insert", &json!({"text": ", typed"}));
+        pair[first].push(&mut server);
+        pair[1 - first].push(&mut server);
+        settle(&mut server, &mut pair);
+        assert_same(&pair, "move and type");
+        assert_eq!(text_of(&pair[0], 0, id), format!("{was}, typed"), "{first} first");
+        assert_eq!(pair[0].doc().slides[0].shape(id).unwrap().xfrm, moved, "{first} first");
+    }
+    settle(&mut server, &mut all);
+    assert_same(&all, "move and type");
+}
+
+#[test]
+fn bold_and_typing_in_the_same_words_both_stay() {
+    let mut server = Server::default();
+    let mut all = people(2);
+    go_to(&mut all[0], 0);
+    go_to(&mut all[1], 0);
+    let id = shapes_on(&all[0], 0)[0].id;
+    // Ann bolds the whole title; Bob types at its end meanwhile.
+    all[0].run("edit.select", &json!({"ids": [id.0]}));
+    all[0].run("format.bold", &json!({}));
+    all[1].run("text.edit", &json!({"id": id.0, "end": true}));
+    all[1].run("text.insert", &json!({"text": " too"}));
+    settle(&mut server, &mut all);
+    assert_same(&all, "bold and typing");
+    let title = all[0].doc().slides[0].shape(id).unwrap().text.clone().unwrap();
+    assert!(title.text().ends_with(" too"));
+    assert!(title.paragraphs[0].runs.iter().take(1).all(|r| r.props.bold == Some(true)), "Ann's bold stays: {:?}", title.paragraphs[0].runs);
+}
+
+#[test]
+fn you_stay_on_your_slide_when_someone_adds_one_in_front() {
+    let mut server = Server::default();
+    let mut all = people(2);
+    go_to(&mut all[0], 0);
+    go_to(&mut all[1], 3);
+    let mine = all[1].doc().slides[3].id;
+    all[0].run("slide.new", &json!({"title": "In front"}));
+    all[0].run("slide.delete", &json!({"index": 2}));
+    all[0].run("slide.new", &json!({"title": "And another"}));
+    settle(&mut server, &mut all);
+    assert_same(&all, "slides added in front");
+    let st = all[1].s.doc().unwrap();
+    assert_eq!(st.current_slide().map(|s| s.id), Some(mine), "Bob is still on his slide");
+}
+
 #[test]
 fn presence_says_where_you_are_and_keeps_the_others() {
     let mut all = people(2);
@@ -649,9 +745,35 @@ fn fuzz(seed: u64, steps: usize, n: u64) {
                 let to = r.below(slides);
                 go_to(&mut all[who], to);
             }
-            _ => {
-                let id = if r.below(2) == 0 { *r.pick(COMMON).unwrap() } else { *r.pick(&ids).unwrap() };
-                let p = params(&mut r, &all[who].s);
+            k => {
+                let (id, p) = if k <= 6 {
+                    // Typing: often in the first slide's boxes, so people type in the same one.
+                    if r.below(2) == 0 {
+                        go_to(&mut all[who], 0);
+                    }
+                    let texts: Vec<(u32, usize)> = all[who]
+                        .s
+                        .doc()
+                        .map(|d| d.shapes().iter().filter_map(|s| s.text.as_ref().map(|t| (s.id.0, t.paragraphs.len()))).collect())
+                        .unwrap_or_default();
+                    if let Some(&(shape, paras)) = r.pick(&texts)
+                        && all[who].s.doc().is_ok_and(|d| d.selection.text.as_ref().is_none_or(|t| t.shape.0 != shape))
+                    {
+                        let at = json!([r.below(paras.max(1)), r.below(12)]);
+                        let _ = all[who].s.execute("text.edit", &json!({"id": shape, "at": at}));
+                        log.push_back(format!("{} edits text of {shape} at {at}", who + 1));
+                    }
+                    match r.below(6) {
+                        0 => ("text.delete", json!({"dir": if r.below(2) == 0 { "backward" } else { "forward" }})),
+                        1 => ("text.insert", json!({"text": "\n"})),
+                        2 => ("format.bold", json!({})),
+                        3 => ("text.move", json!({"to": "wordLeft", "extend": true})),
+                        _ => ("text.insert", json!({"text": *r.pick(&["a", "Ann ", "Bob! ", "ש", "漢字 ", "x"]).unwrap()})),
+                    }
+                } else {
+                    let id = if r.below(2) == 0 { *r.pick(COMMON).unwrap() } else { *r.pick(&ids).unwrap() };
+                    (id, params(&mut r, &all[who].s))
+                };
                 log.push_back(format!("{} runs {id} {p}", who + 1));
                 let before = all[who].doc().clone();
                 let steps = all[who].steps();
@@ -689,8 +811,11 @@ fn fuzz(seed: u64, steps: usize, n: u64) {
         while log.len() > 30 {
             log.pop_front();
         }
+        // People deleting slides at once can leave none (each of them left one): a presentation
+        // with no slides is allowed, as in PowerPoint, and the commands carry on with it.
         for p in &all {
-            assert!(!p.doc().slides.is_empty(), "no slides left; {}", ctx(&log));
+            let st = p.s.doc().unwrap();
+            assert!(st.doc.slides.is_empty() || st.selection.slide < st.doc.slides.len(), "selection off the slides; {}", ctx(&log));
         }
     }
     settle(&mut server, &mut all);
@@ -717,7 +842,12 @@ fn fuzz(seed: u64, steps: usize, n: u64) {
         assert!(*f == files[0], "pptx of copies 1 and {} differ: {}; seed {seed}", i + 1, first_diff(&files[0], f, ""));
     }
     assert!(edits * 10 >= steps, "only {edits} of {steps} steps edited; seed {seed}");
-    eprintln!("collab fuzz seed {seed}: {n} people, {edits} edits, {} ops in the log", server.log.len());
+    let texts = server.log.iter().filter(|e| e.contains("\"text\":[{")).count();
+    let whole = server.log.iter().filter(|e| e.contains("\"whole\":[")).count();
+    eprintln!(
+        "collab fuzz seed {seed}: {n} people, {edits} edits, {} ops in the log ({texts} with text edits, {whole} with shapes sent whole)",
+        server.log.len()
+    );
 }
 
 fn steps(default: usize) -> usize {
