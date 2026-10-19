@@ -75,3 +75,34 @@ fn live_co_editing_with_the_browser() {
     eprintln!("live: left at {:?}", app.session.collab_seq());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Open in Desktop App's link opens the file and joins its session; the Share dialog's questions
+/// (who the file is shared with, who could be added) are answered by the real sharing API. Only
+/// asks; changes nothing. `DECKCRAFT_LIVE_SEARCH` is what to look for (default `vi`).
+#[test]
+#[ignore = "needs a Nextcloud with the SlideLogic app; see the module's documentation"]
+fn live_desktop_link_and_sharing() {
+    let dir = std::env::temp_dir().join(format!("slidelogic-live-link-{}", std::process::id()));
+    let mut nc = Nextcloud::new(None, Some(dir.clone()), |_, _| {});
+    let server = normalise_server(&env("DECKCRAFT_LIVE_SERVER")).unwrap();
+    {
+        let mut s = lock(&nc.state);
+        let user = env("DECKCRAFT_LIVE_USER");
+        s.stored.account = Some(Account { server: server.clone(), login: user.clone(), user });
+        s.password = Some(env("DECKCRAFT_LIVE_PASSWORD"));
+    }
+    let ctx = egui::Context::default();
+    let mut app = SlideApp::new(Session::new(), Services { cloud: Some(nc.cloud()), ..Default::default() });
+    let link = format!("slidelogic://open?server={}&path={}", encode(&server), encode(&env("DECKCRAFT_LIVE_FILE")));
+    assert!(nc.open_link(&link), "{link}");
+    until(&mut nc, &mut app, &ctx, "the linked presentation, shared", 60, |app| app.session.collab_active());
+    let ask = |nc: &Nextcloud, app: &SlideApp, op: &str, p: serde_json::Value| run(&nc.state, op, &p, nc.doc(app), &|_| {});
+    let info = ask(&nc, &app, "share.info", json!({})).unwrap();
+    eprintln!("live: share.info {info}");
+    assert_eq!((info["inCloud"].as_bool(), info["canShare"].as_bool()), (Some(true), Some(true)));
+    let query = std::env::var("DECKCRAFT_LIVE_SEARCH").unwrap_or_else(|_| "vi".into());
+    eprintln!("live: share.search {}", ask(&nc, &app, "share.search", json!({"query": query})).unwrap());
+    eprintln!("live: share.list {}", ask(&nc, &app, "share.list", json!({})).unwrap());
+    nc.shutdown(&mut app);
+    let _ = std::fs::remove_dir_all(&dir);
+}

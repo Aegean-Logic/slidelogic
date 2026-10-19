@@ -16,8 +16,10 @@
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?blank` starts with an
 //! empty presentation instead of the sample deck; `?show` starts the slide show. `?host=parent`
 //! (inside an `<iframe>`) talks to a same-origin parent page instead: it sends the presentation to
-//! open and stores what SlideLogic saves (`host`), `&author=` names the user for new comments, and
-//! `&ack=1` has the parent confirm each save (`acks`).
+//! open and stores what SlideLogic saves (`host`), `&author=` names the user for new comments,
+//! `&ack=1` has the parent confirm each save (`acks`), and `&desktop=1` offers Open in Desktop
+//! App. The page can run a co-editing session (`collab_msg`) and is the Share dialog's cloud
+//! (`host`).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 

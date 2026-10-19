@@ -29,6 +29,7 @@ pub mod qat;
 pub mod ribbon;
 pub mod selpane;
 pub mod settings;
+pub mod share;
 pub mod show;
 pub mod sorter;
 pub mod squiggles;
@@ -241,6 +242,8 @@ pub struct Services {
     /// The host's cloud (Nextcloud, on the desktop): the File view's Nextcloud places use it
     /// ([`cloud_files`]).
     pub cloud: Option<cloud::Cloud>,
+    /// Web: "Open in Desktop App": the page opens the presentation in SlideLogic on this computer.
+    pub open_in_desktop: Option<Box<dyn Fn()>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -415,6 +418,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ),
     ("app.about", "About SlideLogic", None, "{}"),
     ("app.palette", "Command Palette", Some("Cmd+Shift+P"), "{}"),
+    ("app.share", "Share", None, "{}"),
     ("app.preferences", "Preferences…", Some("Cmd+,"), "{}"),
     ("app.openDialog", "Open…", None, "{purpose?}"),
     ("app.insertPictureDialog", "Picture from File…", None, "{}"),
@@ -498,6 +502,8 @@ pub struct SlideApp {
     pub backstage: Option<backstage::Backstage>,
     /// The File view's Nextcloud places, and conflicts and problems the host reports.
     pub cloud_files: cloud_files::CloudFiles,
+    /// The Share dialog, when open ([`share`]).
+    pub share: Option<share::ShareDialog>,
     pending_urls: Vec<String>,
     /// Text for the system clipboard from a Copy or Cut command, handed over on the next frame.
     pending_copy: Option<String>,
@@ -596,6 +602,7 @@ impl SlideApp {
             thumb_drag: None,
             selpane: selpane::State::default(),
             cloud_files: cloud_files::CloudFiles::default(),
+            share: None,
             doc_window: None,
             sorter: sorter::State::default(),
             slides_focused: false,
@@ -1023,6 +1030,13 @@ impl SlideApp {
             }
             "app.about" => self.dialog = Some(dialogs::Dialog::new("about")),
             "app.palette" => self.palette = Some((String::new(), 0)),
+            "app.share" => {
+                if self.services.cloud.is_none() {
+                    return Err("Sharing needs a Nextcloud connection: sign in under File › Account.".into());
+                }
+                self.share = share::ShareDialog::open(self);
+                return Ok(json!({"open": self.share.is_some()}));
+            }
             "app.preferences" => self.dialog = Some(dialogs::Dialog::new("preferences")),
             "app.openDialog" => self.pick_and_open(),
             "app.insertPictureDialog" => self.pick_and_insert("picture", "insert.picture"),
@@ -1874,6 +1888,7 @@ impl SlideApp {
         toast::note_missing_fonts(self);
         toast::show(self, &ctx);
         cloud_files::show(self, &ctx);
+        share::show(self, &ctx);
         dialogs::show(self, &ctx);
         menus::palette(self, &ctx);
         for url in std::mem::take(&mut self.pending_urls) {
@@ -2067,6 +2082,8 @@ mod huge_deck_tests;
 mod ime_tests;
 #[cfg(test)]
 mod replacefonts_tests;
+#[cfg(test)]
+mod share_tests;
 #[cfg(test)]
 mod slide_size_tests;
 #[cfg(test)]

@@ -202,6 +202,15 @@
         <RegistryValue Root="HKLM" Key="Software\Classes\.ppsx\OpenWithProgids" Name="SlideLogic.Presentation" Value="" Type="string" />
 
         <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\deckcraft.exe" Value="[#DeckcraftExe]" Type="string" />
+
+        <!-- slidelogic:// links: Open in Desktop App from Nextcloud in the browser
+             (`slidelogic://open?server=…&path=…`, handled in apps/deckcraft/src/nextcloud.rs).
+             Windows looks for a value named "URL Protocol"; its content isn't read (WiX rejects an
+             empty Value, so it names the scheme). As WordLogic's and GridLogic's installers do. -->
+        <RegistryValue Root="HKLM" Key="Software\Classes\slidelogic" Value="URL:SlideLogic" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\slidelogic" Name="URL Protocol" Value="slidelogic" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\slidelogic\DefaultIcon" Value="&quot;[#DeckcraftExe]&quot;,0" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Classes\slidelogic\shell\open\command" Value="&quot;[#DeckcraftExe]&quot; &quot;%1&quot;" Type="string" />
       </Component>
 
       <Component Id="DeckcraftCli">

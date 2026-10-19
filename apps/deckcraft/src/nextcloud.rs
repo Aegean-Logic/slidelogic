@@ -1,7 +1,10 @@
 //! Nextcloud for the desktop app, as OneDrive is for PowerPoint: sign in once (Nextcloud's Login
-//! Flow v2, in the browser; the app password goes to the system keychain), and open and save
-//! presentations in Nextcloud from the File view ([`deckcraft_ui_egui::cloud::Cloud`]). Ported from
-//! WordLogic's `apps/wordcraft/src/nextcloud.rs` (itself GridLogic's), without the Share dialog.
+//! Flow v2, in the browser; the app password goes to the system keychain), open and save
+//! presentations in Nextcloud from the File view, upload a presentation to share it, and the Share
+//! dialog's operations ([`deckcraft_ui_egui::cloud::Cloud`]) through Nextcloud's sharing API. Ported
+//! from WordLogic's `apps/wordcraft/src/nextcloud.rs` (itself GridLogic's). Open in Desktop App in
+//! the browser hands over a `slidelogic://open?server=…&path=…` link ([`Nextcloud::open_link`]).
+
 //!
 //! A presentation in Nextcloud is worked on as a copy in this computer's cache folder, tied to the
 //! Nextcloud file: saving the copy sends it to Nextcloud, unless someone changed the Nextcloud file
@@ -34,6 +37,8 @@ use serde_json::{Value as Json, json};
 
 /// The keychain entry's service; its user is `login@server`.
 const KEYRING_SERVICE: &str = "SlideLogic Nextcloud";
+/// The folder in the user's Nextcloud files that uploaded presentations go to.
+const FOLDER: &str = "SlideLogic";
 /// How often sign-in asks whether the user has approved it in the browser, and how many times
 /// (20 minutes).
 const SIGN_IN_POLL: Duration = Duration::from_secs(2);
@@ -48,6 +53,10 @@ const JOIN_WAIT_SECONDS: f64 = 120.0;
 /// What the File view lists and opens from Nextcloud: the formats SlideLogic writes back as they
 /// are, which are also the ones co-edited (as `deckcraft-nextcloud`'s editor does).
 const PRESENTATIONS: [&str; 4] = ["pptx", "potx", "ppsx", "deckcraft"];
+/// Nextcloud's share types and file permissions (read; read + update).
+const SHARE_TYPES: [(&str, i64); 6] = [("user", 0), ("group", 1), ("link", 3), ("email", 4), ("remote", 6), ("team", 7)];
+const VIEW: i64 = 1;
+const EDIT: i64 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +138,10 @@ struct State {
     rejoined: Vec<(String, coedit::Joined)>,
     /// The local copy being co-edited: its saves go to the session, not the save-back.
     shared: Option<String>,
+    /// Uploaded presentations that have no file on this computer yet, by document uid.
+    unsaved_docs: HashMap<u64, Remote>,
+    /// Files to open (from Open in Desktop App).
+    open_now: Vec<String>,
 }
 
 /// Records that `stored` changed and writes it out (left for the next frame if that fails).
@@ -143,6 +156,16 @@ fn persist(s: &mut State) {
         Ok(()) => s.unsaved = false,
         Err(e) => log::warn!("{}: {e}", file.display()),
     }
+}
+
+/// The presentation a request is about, as the UI thread saw it.
+struct Doc {
+    title: String,
+    path: Option<String>,
+    uid: u64,
+    remote: Option<Remote>,
+    /// Encodes the presentation in the format a file name says (on the worker thread).
+    encode: Box<dyn FnOnce(&str) -> Result<Vec<u8>, String> + Send>,
 }
 
 /// Opens a web page in the browser (the sign-in page).
@@ -166,6 +189,8 @@ pub struct Nextcloud {
     coedit: Option<coedit::Coedit>,
     /// A joined session waiting for its presentation to open, since when.
     pending_join: Option<(String, coedit::Joined, f64)>,
+    /// A `slidelogic://open` link waiting to be followed: (server, path, sign-in asked for).
+    link: Option<(String, String, bool)>,
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -194,6 +219,7 @@ impl Nextcloud {
             open_url,
             coedit: None,
             pending_join: None,
+            link: None,
         }
     }
 
@@ -219,12 +245,14 @@ impl Nextcloud {
     pub fn poll(&mut self, app: &mut SlideApp, ctx: &egui::Context) {
         let requests = std::mem::take(&mut *self.requests.lock().unwrap_or_else(|e| e.into_inner()));
         for (id, op, params) in requests {
+            // Only the operations about the presentation get a copy of it.
+            let doc = if op.starts_with("share.") || op == "account.signIn" { self.doc(app) } else { None };
             let state = self.state.clone();
             let answers = self.answers.clone();
             let ctx = ctx.clone();
             let open_url = self.open_url;
             let spawned = std::thread::Builder::new().name("nextcloud".into()).spawn(move || {
-                let answer = run(&state, &op, &params, &|url| open_url(&ctx, url));
+                let answer = run(&state, &op, &params, doc, &|url| open_url(&ctx, url));
                 answers.lock().unwrap_or_else(|e| e.into_inner()).push((id, answer));
                 ctx.request_repaint();
             });
@@ -243,6 +271,7 @@ impl Nextcloud {
                 self.modified.remove(&path);
             }
         }
+        self.follow_link(app, ctx);
         let dirty: HashSet<u64> = app.session.documents().iter().filter(|d| d.is_dirty()).map(|d| d.uid).collect();
         let just_saved = self.dirty.iter().any(|u| !dirty.contains(u));
         self.dirty = dirty;
@@ -280,10 +309,14 @@ impl Nextcloud {
     /// Live co-editing: starts a session joined for a file just opened, and runs the shared one.
     fn poll_coedit(&mut self, app: &mut SlideApp, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        let (rejoined, joined) = {
+        let (rejoined, joined, open_now) = {
             let mut s = lock(&self.state);
-            (std::mem::take(&mut s.rejoined), std::mem::take(&mut s.joined))
+            (std::mem::take(&mut s.rejoined), std::mem::take(&mut s.joined), std::mem::take(&mut s.open_now))
         };
+        for local in open_now {
+            // As File › Open does (beside what's open; the File view closes on it).
+            app.open_path_in_background(&local);
+        }
         for (local, j) in rejoined {
             // The copy here is behind the session: open the file as it is now in its place (what
             // wasn't shared yet is lost, as when the browser reloads).
@@ -372,12 +405,90 @@ impl Nextcloud {
         self.replace_pending(None);
     }
 
+    /// Open in Desktop App from the browser: `slidelogic://open?server=…&path=…`. The presentation
+    /// opens once signed in to that server (File › Account is shown, with its address, until then).
+    pub fn open_link(&mut self, url: &str) -> bool {
+        match parse_link(url) {
+            Some((server, path)) => {
+                self.link = Some((server, path, false));
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn follow_link(&mut self, app: &mut SlideApp, ctx: &egui::Context) {
+        let Some((server, path, asked)) = self.link.clone() else { return };
+        if self.server().is_some_and(|s| s.eq_ignore_ascii_case(&server)) {
+            self.link = None;
+            let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+            app.set_status(format!("Opening {name} from Nextcloud…"));
+            self.open_remote(ctx, path);
+        } else if !asked {
+            // Signed out, or into another server: sign in to this one first (once; the
+            // presentation opens when the sign-in is done).
+            self.link = Some((server.clone(), path.clone(), true));
+            app.cloud_files.server = server.trim_start_matches("https://").to_string();
+            app.open_backstage(deckcraft_ui_egui::backstage::Page::Account);
+            app.set_status(format!("Sign in to {server} to open {path}."));
+        }
+    }
+
+    /// Opens `remote` in this server's Nextcloud (Open in Desktop App): downloaded, joined, then
+    /// opened by the next frame.
+    fn open_remote(&self, ctx: &egui::Context, remote: String) {
+        let (state, ctx) = (self.state.clone(), ctx.clone());
+        let _ = std::thread::Builder::new().name("nextcloud open".into()).spawn(move || {
+            match open_file(&state, &remote, &[]) {
+                Ok(r) => {
+                    if let Some(local) = r.get("localPath").and_then(Json::as_str) {
+                        lock(&state).open_now.push(local.to_string());
+                    }
+                }
+                Err(e) => lock(&state).notices.push(("Couldn't open from Nextcloud".into(), e, true)),
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// The server signed in to, if any (`https://cloud.example.com`).
+    fn server(&self) -> Option<String> {
+        lock(&self.state).stored.account.as_ref().map(|a| a.server.clone())
+    }
+
+    /// The presentation showing, for a request about it.
+    fn doc(&self, app: &SlideApp) -> Option<Doc> {
+        let st = app.session.active()?;
+        let s = lock(&self.state);
+        let tied = st.path.as_deref().and_then(|p| tie_key(&s.stored.files, p));
+        let remote = tied.and_then(|k| s.stored.files.get(&k)).or_else(|| s.unsaved_docs.get(&st.uid)).cloned();
+        let doc = st.doc.clone();
+        Some(Doc {
+            title: st.title(),
+            path: st.path.clone(),
+            uid: st.uid,
+            remote,
+            encode: Box::new(move |name| deckcraft_engine::cmd::file::save_bytes(&doc, format_for(name)).map_err(|e| e.to_string())),
+        })
+    }
+
     /// Sends each open presentation tied to Nextcloud to it when it was saved on this computer
     /// since it was last looked at.
     fn send_saved(&mut self, app: &SlideApp, ctx: &egui::Context) {
         let mut s = lock(&self.state);
         if s.stored.account.is_none() {
             return;
+        }
+        // An uploaded presentation saved for the first time: from now on it's its file.
+        for d in app.session.documents() {
+            if let Some(local) = d.path.as_deref().filter(|p| is_presentation(p))
+                && let Some(remote) = s.unsaved_docs.remove(&d.uid)
+            {
+                s.stored.files.insert(local.to_string(), remote);
+                persist(&mut s);
+                // Never looked at: send it now.
+                self.modified.insert(local.to_string(), None);
+            }
         }
         for d in app.session.documents() {
             let Some(local) = d.path.as_deref() else { continue };
@@ -594,12 +705,13 @@ fn resolve(state: &Mutex<State>, local: &str, choice: &str) -> Result<Json, Stri
 }
 
 /// Carries out one of the File view's operations.
-fn run(state: &Mutex<State>, op: &str, params: &Json, open_url: &dyn Fn(&str)) -> Result<Json, String> {
+fn run(state: &Mutex<State>, op: &str, params: &Json, doc: Option<Doc>, open_url: &dyn Fn(&str)) -> Result<Json, String> {
     let text = |k: &str| params.get(k).and_then(Json::as_str).unwrap_or("").to_string();
     match op {
+        // The account (for the File view) and the presentation (for the Share dialog).
         "account.signIn" => {
             sign_in(state, &text("server"), open_url)?;
-            Ok(account_info(state))
+            info(state, doc.as_ref())
         }
         "account.info" => Ok(account_info(state)),
         "account.signOut" => {
@@ -616,6 +728,17 @@ fn run(state: &Mutex<State>, op: &str, params: &Json, open_url: &dyn Fn(&str)) -
         "files.saveAs" => {
             let replace = params.get("replace").and_then(Json::as_bool).unwrap_or(false);
             save_as_target(state, &text("folder"), &text("name"), replace)
+        }
+        "share.info" => info(state, doc.as_ref()),
+        "share.upload" => {
+            let name = upload(state, doc.ok_or("There's no presentation open.")?)?;
+            Ok(info_after_upload(state, &name))
+        }
+        _ if op.starts_with("share.") => {
+            let doc = doc.ok_or("There's no presentation open.")?;
+            let remote = doc.remote.as_ref().ok_or("Upload the presentation to Nextcloud first.")?;
+            let nc = Connection::open(state)?;
+            share_op(&nc, op, params, &format!("/{}", remote.path))
         }
         _ => Err(format!("Nextcloud can't do “{op}” here.")),
     }
@@ -641,6 +764,7 @@ fn sign_out(state: &Mutex<State>) {
     }
     s.password = None;
     s.stored.files.clear();
+    s.unsaved_docs.clear();
     persist(&mut s);
 }
 
@@ -907,6 +1031,244 @@ fn save_as_target(state: &Mutex<State>, folder: &str, name: &str, replace: bool)
     Ok(json!({"localPath": local_text, "name": name}))
 }
 
+/// `{name, signedIn, inCloud, canShare, account?, server?}` for the Share dialog (and the File
+/// view's account, after signing in).
+fn info(state: &Mutex<State>, doc: Option<&Doc>) -> Result<Json, String> {
+    let account = lock(state).stored.account.clone();
+    let name = doc.map(|d| d.title.clone()).unwrap_or_default();
+    let remote = doc.and_then(|d| d.remote.clone());
+    let can_share = match (&account, &remote) {
+        (Some(_), Some(remote)) => {
+            let nc = Connection::open(state)?;
+            nc.can_share(&remote.path)?
+        }
+        _ => true,
+    };
+    Ok(json!({
+        "name": remote.as_ref().and_then(|r| r.path.rsplit('/').next()).map(str::to_string).unwrap_or(name),
+        "signedIn": account.is_some(),
+        "inCloud": account.is_some() && remote.is_some(),
+        "canShare": can_share,
+        "account": account.as_ref().map(Account::shown),
+        "server": account.as_ref().map(|a| a.server.clone()),
+    }))
+}
+
+fn info_after_upload(state: &Mutex<State>, name: &str) -> Json {
+    let s = lock(state);
+    json!({
+        "name": name,
+        "signedIn": true,
+        "inCloud": true,
+        "canShare": true,
+        "account": s.stored.account.as_ref().map(Account::shown),
+    })
+}
+
+/// The format a presentation is written in, by its file name (.pptx for anything else).
+fn format_for(name: &str) -> &'static str {
+    match extension(name).as_str() {
+        "potx" => "potx",
+        "ppsx" => "ppsx",
+        "deckcraft" => "deckcraft",
+        _ => "pptx",
+    }
+}
+
+/// Puts the presentation in the SlideLogic folder under a name that's free there; its name there.
+fn upload(state: &Mutex<State>, doc: Doc) -> Result<String, String> {
+    let nc = Connection::open(state)?;
+    let stem = Path::new(&doc.title).file_stem().and_then(|s| s.to_str()).filter(|s| !s.is_empty()).unwrap_or("Presentation1").to_string();
+    let ext = doc.path.as_deref().filter(|p| is_presentation(p)).map(extension).unwrap_or_else(|| "pptx".into());
+    let bytes = (doc.encode)(&format!("{stem}.{ext}"))?;
+    let folder = nc.send("MKCOL", &nc.dav(FOLDER), &[], Vec::new())?;
+    if !matches!(folder.status, 201 | 405) {
+        return Err(format!("Couldn't make the {FOLDER} folder in Nextcloud ({}).", folder.status));
+    }
+    for n in 1..=50 {
+        let name = if n == 1 { format!("{stem}.{ext}") } else { format!("{stem} ({n}).{ext}") };
+        let path = format!("{FOLDER}/{name}");
+        let headers = [("If-None-Match", "*".to_string()), ("Content-Type", "application/octet-stream".to_string())];
+        let r = nc.send("PUT", &nc.dav(&path), &headers, bytes.clone())?;
+        match r.status {
+            412 => continue,
+            200..=299 => {
+                let synced = doc.path.as_deref().filter(|p| is_presentation(p)).and_then(|p| mtime(Path::new(p)));
+                let remote = Remote { path, etag: r.etag, synced };
+                let mut s = lock(state);
+                match doc.path.filter(|p| is_presentation(p)) {
+                    Some(local) => {
+                        s.stored.files.insert(local, remote);
+                        persist(&mut s);
+                    }
+                    None => {
+                        s.unsaved_docs.insert(doc.uid, remote);
+                    }
+                }
+                return Ok(name);
+            }
+            status => return Err(format!("Nextcloud answered {status} while uploading.")),
+        }
+    }
+    Err(format!("{FOLDER} in Nextcloud already has presentations called {stem}; rename this one first."))
+}
+
+/// The sharing operations, as `deckcraft-nextcloud/src/share.js` carries them out in the browser.
+fn share_op(nc: &Connection, op: &str, p: &Json, path: &str) -> Result<Json, String> {
+    let s = |k: &str| p.get(k).and_then(Json::as_str).unwrap_or("").to_string();
+    let edit = |k: &str| if p.get(k).and_then(Json::as_bool).unwrap_or(false) { EDIT } else { VIEW };
+    let id = || match p.get("id") {
+        Some(Json::String(s)) if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()) => Ok(s.clone()),
+        Some(Json::Number(n)) => Ok(n.to_string()),
+        _ => Err("That share isn't known.".to_string()),
+    };
+    match op {
+        "share.search" => {
+            let mut q = vec![("search", s("query")), ("itemType", "file".into()), ("lookup", "false".into()), ("perPage", "10".into())];
+            for t in [0, 1, 4, 6, 7] {
+                q.push(("shareType[]", t.to_string()));
+            }
+            let data = nc.ocs("GET", "apps/files_sharing/api/v1/sharees", &q, None)?;
+            Ok(Json::Array(sharees(&data)))
+        }
+        "share.list" => list(nc, path).map(Json::Array),
+        "share.add" => {
+            let kind = s("type");
+            let share_type = SHARE_TYPES.iter().find(|(k, _)| *k == kind).map(|(_, v)| *v).unwrap_or(0);
+            let created =
+                nc.share("POST", "", json!({"path": path, "shareType": share_type, "shareWith": s("shareWith"), "permissions": edit("edit")}))?;
+            let note = s("note");
+            if !note.is_empty()
+                && let Some(id) = share_id(&created)
+            {
+                nc.share("PUT", &id, json!({"note": note}))?;
+            }
+            Ok(share_of(&created))
+        }
+        "share.update" => {
+            let id = id()?;
+            let mut last = None;
+            if p.get("edit").is_some_and(|v| !v.is_null()) {
+                last = Some(nc.share("PUT", &id, json!({"permissions": edit("edit")}))?);
+            }
+            if let Some(password) = p.get("password") {
+                last = Some(nc.share("PUT", &id, json!({"password": password.as_str().unwrap_or("")}))?);
+            }
+            if let Some(expiration) = p.get("expiration") {
+                last = Some(nc.share("PUT", &id, json!({"expireDate": expiration.as_str().unwrap_or("")}))?);
+            }
+            Ok(last.map(|s| share_of(&s)).unwrap_or_else(|| json!({})))
+        }
+        "share.remove" => {
+            nc.share("DELETE", &id()?, Json::Null)?;
+            Ok(json!({}))
+        }
+        "share.link" => {
+            let existing = list(nc, path)?.into_iter().find(|s| s["type"] == "link").and_then(|s| share_id(&s));
+            let password = s("password");
+            let expiration = s("expiration");
+            let link = match existing {
+                Some(id) => {
+                    nc.share("PUT", &id, json!({"permissions": edit("edit")}))?;
+                    if !password.is_empty() {
+                        nc.share("PUT", &id, json!({"password": password}))?;
+                    }
+                    nc.share("PUT", &id, json!({"expireDate": expiration}))?
+                }
+                None => {
+                    let mut params = json!({"path": path, "shareType": 3, "permissions": edit("edit")});
+                    if !password.is_empty() {
+                        params["password"] = json!(password);
+                    }
+                    if !expiration.is_empty() {
+                        params["expireDate"] = json!(expiration);
+                    }
+                    nc.share("POST", "", params)?
+                }
+            };
+            Ok(share_of(&link))
+        }
+        _ => Err(format!("Sharing can't do “{op}” here.")),
+    }
+}
+
+fn list(nc: &Connection, path: &str) -> Result<Vec<Json>, String> {
+    let data = nc.ocs("GET", "apps/files_sharing/api/v1/shares", &[("path", path.to_string()), ("reshares", "true".into())], None)?;
+    Ok(data.as_array().map(|a| a.iter().map(share_of).collect()).unwrap_or_default())
+}
+
+fn share_id(s: &Json) -> Option<String> {
+    match s.get("id")? {
+        Json::String(s) => Some(s.clone()),
+        Json::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// A Nextcloud share as the Share dialog wants it.
+fn share_of(s: &Json) -> Json {
+    let code = s.get("share_type").and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok())).unwrap_or(0);
+    let kind = SHARE_TYPES.iter().find(|(_, v)| *v == code).map(|(k, _)| *k).unwrap_or("user");
+    let permissions = s.get("permissions").and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok())).unwrap_or(0);
+    let text = |k: &str| s.get(k).and_then(Json::as_str).unwrap_or("");
+    let label = [text("share_with_displayname"), text("share_with")].into_iter().find(|t| !t.is_empty()).unwrap_or("");
+    json!({
+        "id": s.get("id").cloned().unwrap_or(Json::Null),
+        "type": kind,
+        "shareWith": text("share_with"),
+        "label": label,
+        "edit": permissions & 2 != 0,
+        "url": s.get("url").and_then(Json::as_str),
+        "password": kind == "link" && (!text("password").is_empty() || !text("share_with").is_empty()),
+        "expiration": s.get("expiration").and_then(Json::as_str).filter(|e| !e.is_empty()).map(|e| e.chars().take(10).collect::<String>()),
+    })
+}
+
+/// The sharee search's answer as suggestions: exact matches first, each once.
+fn sharees(data: &Json) -> Vec<Json> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let empty = json!({});
+    for bucket in [data.get("exact").unwrap_or(&empty), data] {
+        for key in ["users", "groups", "emails", "remotes", "circles"] {
+            for e in bucket.get(key).and_then(Json::as_array).into_iter().flatten() {
+                let code = e.pointer("/value/shareType").and_then(Json::as_i64).unwrap_or(-1);
+                let Some(kind) = SHARE_TYPES.iter().find(|(_, v)| *v == code).map(|(k, _)| *k) else { continue };
+                let with =
+                    e.pointer("/value/shareWith").and_then(|v| v.as_str().map(str::to_string).or_else(|| Some(v.to_string()))).unwrap_or_default();
+                if !seen.insert(format!("{kind}:{with}")) {
+                    continue;
+                }
+                let detail =
+                    ["shareWithDisplayNameUnique", "subline"].iter().filter_map(|k| e.get(*k).and_then(Json::as_str)).find(|d| !d.is_empty());
+                out.push(json!({"label": e.get("label").and_then(Json::as_str).unwrap_or(&with), "detail": detail, "type": kind, "shareWith": with}));
+            }
+        }
+    }
+    out
+}
+
+/// `slidelogic://open?server=…&path=…`: (server, path in the user's files).
+fn parse_link(url: &str) -> Option<(String, String)> {
+    let query = url.strip_prefix("slidelogic://open?").or_else(|| url.strip_prefix("slidelogic://open/?"))?;
+    let mut server = String::new();
+    let mut path = String::new();
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        match k {
+            "server" => server = decode(&v.replace('+', " ")),
+            "path" => path = decode(&v.replace('+', " ")),
+            _ => {}
+        }
+    }
+    let server = normalise_server(&server).ok()?;
+    let path = path.trim_matches('/').to_string();
+    if path.is_empty() || path.split('/').any(|p| p == "..") {
+        return None;
+    }
+    Some((server, path))
+}
+
 /// `https://` unless the server is this computer; no trailing slash or `index.php`.
 fn normalise_server(typed: &str) -> Result<String, String> {
     let t = typed.trim().trim_end_matches('/');
@@ -953,6 +1315,7 @@ fn sign_in(state: &Mutex<State>, typed: &str, open_url: &dyn Fn(&str)) -> Result
         }
         if old.server != account.server || old.user != account.user {
             s.stored.files.clear();
+            s.unsaved_docs.clear();
         }
     }
     s.password = Some(password);
@@ -994,7 +1357,7 @@ fn sign_in_flow(server: &str, open_url: &dyn Fn(&str)) -> Result<(Account, Strin
     let password = done.get("appPassword").and_then(Json::as_str).ok_or("Nextcloud didn't finish signing in.")?.to_string();
     // Everything goes to the server the user typed, whatever address Nextcloud calls itself.
     let nc = Connection { http, server: server.to_string(), user: String::new(), auth: basic(&login_name, &password) };
-    let me = nc.ocs("GET", "cloud/user")?;
+    let me = nc.ocs("GET", "cloud/user", &[], None)?;
     let user = me.get("id").and_then(Json::as_str).filter(|u| !u.is_empty()).ok_or("Nextcloud didn't say who you are.")?.to_string();
     Ok((Account { server: server.to_string(), login: login_name, user }, password))
 }
@@ -1088,11 +1451,24 @@ impl Connection {
         format!("{}/remote.php/dav/files/{}/{}", self.server, encode(&self.user), encoded.join("/"))
     }
 
-    /// An OCS call without parameters; its `data`.
-    fn ocs(&self, method: &str, endpoint: &str) -> Result<Json, String> {
-        let url = format!("{}/ocs/v2.php/{endpoint}?format=json", self.server);
-        let headers = [("OCS-APIRequest", "true".to_string()), ("Accept", "application/json".to_string())];
-        let r = self.send(method, &url, &headers, Vec::new())?;
+    /// An OCS call; its `data`.
+    fn ocs(&self, method: &str, endpoint: &str, query: &[(&str, String)], body: Option<Json>) -> Result<Json, String> {
+        let mut url = format!("{}/ocs/v2.php/{endpoint}?format=json", self.server);
+        for (k, v) in query {
+            url.push('&');
+            url.push_str(&encode(k).replace("%5B%5D", "[]"));
+            url.push('=');
+            url.push_str(&encode(v));
+        }
+        let mut headers = vec![("OCS-APIRequest", "true".to_string()), ("Accept", "application/json".to_string())];
+        let body = match body {
+            Some(b) if !b.is_null() => {
+                headers.push(("Content-Type", "application/json".into()));
+                serde_json::to_vec(&b).map_err(|e| e.to_string())?
+            }
+            _ => Vec::new(),
+        };
+        let r = self.send(method, &url, &headers, body)?;
         let answer = r.json().ok();
         let meta = answer.as_ref().and_then(|a| a.pointer("/ocs/meta"));
         let code = meta.and_then(|m| m.get("statuscode")).and_then(Json::as_i64).unwrap_or(0);
@@ -1101,6 +1477,27 @@ impl Connection {
             return Err(message.map(str::to_string).unwrap_or_else(|| format!("Nextcloud answered {}.", r.status)));
         }
         Ok(answer.and_then(|mut a| a.pointer_mut("/ocs/data").map(Json::take)).unwrap_or(Json::Null))
+    }
+
+    /// A call to the sharing API: `shares` or `shares/{id}`.
+    fn share(&self, method: &str, id: &str, body: Json) -> Result<Json, String> {
+        let endpoint =
+            if id.is_empty() { "apps/files_sharing/api/v1/shares".to_string() } else { format!("apps/files_sharing/api/v1/shares/{}", encode(id)) };
+        self.ocs(method, &endpoint, &[], Some(body))
+    }
+
+    /// Whether the user may share the file (its WebDAV permissions include R).
+    fn can_share(&self, path: &str) -> Result<bool, String> {
+        let body =
+            r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop><oc:permissions/></d:prop></d:propfind>"#;
+        let headers = [("Depth", "0".to_string()), ("Content-Type", "application/xml".to_string())];
+        let r = self.send("PROPFIND", &self.dav(path), &headers, body.as_bytes().to_vec())?;
+        if r.status == 404 {
+            return Err("The presentation isn't in Nextcloud any more.".into());
+        }
+        let text = String::from_utf8_lossy(&r.body);
+        let permissions = text.split("<oc:permissions>").nth(1).and_then(|t| t.split('<').next()).unwrap_or("");
+        Ok(permissions.contains('R'))
     }
 
     /// A call to the SlideLogic app's own routes (`/index.php/apps/deckcraft/…`): its status and
@@ -1217,6 +1614,37 @@ mod tests {
         let names: Vec<&str> = items.iter().filter_map(|i| i["name"].as_str()).collect();
         assert_eq!(names, ["Drafts", "Aurora Tour.pptx"], "folders first; spreadsheets aren't listed");
         assert_eq!(items[1]["path"], "Talks/Aurora Tour.pptx");
+    }
+
+    #[test]
+    fn desktop_links_name_a_server_and_a_file() {
+        let mut nc = Nextcloud::new(None, None, |_, _| {});
+        assert!(nc.open_link("slidelogic://open?server=http%3A%2F%2Flocalhost%3A8080&path=%2FSlideLogic%20Test%2FTalk.pptx"));
+        assert_eq!(nc.link, Some(("http://localhost:8080".to_string(), "SlideLogic Test/Talk.pptx".to_string(), false)));
+        assert!(!nc.open_link("slidelogic://open?server=cloud.example"), "no file");
+        assert!(!nc.open_link("https://cloud.example/x"), "not a SlideLogic link");
+        assert!(!nc.open_link("wordlogic://open?server=cloud.example&path=x.docx"), "WordLogic's");
+        assert!(!nc.open_link("slidelogic://open?server=a%40evil&path=x.pptx"), "not a server address");
+        assert!(!nc.open_link("slidelogic://open?server=cloud.example&path=..%2F..%2Fx.pptx"), "out of the user's files");
+    }
+
+    #[test]
+    fn shares_and_sharees_read_like_the_browser() {
+        let s = share_of(
+            &json!({"id": "12", "share_type": 3, "permissions": 1, "url": "https://c/s/x", "share_with": "", "expiration": "2026-12-01 00:00:00"}),
+        );
+        assert_eq!(
+            s,
+            json!({"id": "12", "type": "link", "shareWith": "", "label": "", "edit": false, "url": "https://c/s/x", "password": false, "expiration": "2026-12-01"})
+        );
+        let found = sharees(&json!({
+            "exact": {"users": [{"label": "Ana", "value": {"shareType": 0, "shareWith": "ana"}}]},
+            "users": [{"label": "Ana", "value": {"shareType": 0, "shareWith": "ana"}}],
+            "groups": [{"label": "Finance", "value": {"shareType": 1, "shareWith": "finance"}}],
+        }));
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[1]["type"], "group");
+        assert_eq!((format_for("a.PPSX"), format_for("a.pptx"), format_for("a.txt")), ("ppsx", "pptx", "pptx"));
     }
 
     #[test]

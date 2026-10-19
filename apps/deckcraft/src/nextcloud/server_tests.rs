@@ -86,20 +86,20 @@ fn files_list_open_and_save_back_with_etags() {
     server.data().put("Talks/Budget.xlsx", b"not ours".to_vec());
     server.data().put("Talks/Old/Plan.deckcraft", b"native".to_vec());
     let (nc, _dir) = signed_in(&server, "files");
-    let listing = run(&nc.state, "files.list", &json!({"path": "Talks"}), &|_| {}).unwrap();
+    let listing = run(&nc.state, "files.list", &json!({"path": "Talks"}), None, &|_| {}).unwrap();
     let names: Vec<&str> = listing["items"].as_array().unwrap().iter().filter_map(|i| i["name"].as_str()).collect();
     assert_eq!(names, ["Old", "Aurora.pptx"]);
 
-    let opened = run(&nc.state, "files.open", &json!({"path": "Talks/Aurora.pptx", "openPaths": []}), &|_| {}).unwrap();
+    let opened = run(&nc.state, "files.open", &json!({"path": "Talks/Aurora.pptx", "openPaths": []}), None, &|_| {}).unwrap();
     let local = opened["localPath"].as_str().unwrap().to_string();
     assert_eq!(notes_of(&std::fs::read(&local).unwrap()), "Hello");
     assert_eq!((nc.cloud().location_of(&local)).as_deref(), Some("Talks/Aurora.pptx"));
     assert_eq!(opened["shared"], true, "a .pptx joins its co-editing session");
     let builds = server.data().session_of("Talks/Aurora.pptx").unwrap().builds.clone();
     assert_eq!(builds, [PROTOCOL.to_string()], "joined saying what its ops mean");
-    let again = run(&nc.state, "files.open", &json!({"path": "Talks/Aurora.pptx", "openPaths": [local]}), &|_| {}).unwrap();
+    let again = run(&nc.state, "files.open", &json!({"path": "Talks/Aurora.pptx", "openPaths": [local]}), None, &|_| {}).unwrap();
     assert_eq!(again["alreadyOpen"], true);
-    assert!(run(&nc.state, "files.open", &json!({"path": "../Elsewhere/x.pptx", "openPaths": []}), &|_| {}).is_err());
+    assert!(run(&nc.state, "files.open", &json!({"path": "../Elsewhere/x.pptx", "openPaths": []}), None, &|_| {}).is_err());
 
     // Saved here: sent over the version it came from.
     std::fs::write(&local, pptx("Hello again")).unwrap();
@@ -429,4 +429,89 @@ fn quitting_saves_what_the_file_lacks_before_leaving() {
     let s = server.data().session_of(path).unwrap().checkpoints.clone();
     assert_eq!(s.len(), 1, "one checkpoint, with its snapshot");
     assert!(!s[0].3.is_empty());
+}
+
+/// One of the Share dialog's operations, about the presentation showing.
+fn share(nc: &Nextcloud, app: &SlideApp, op: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    run(&nc.state, op, &params, nc.doc(app), &|_| {})
+}
+
+#[test]
+fn sharing_a_presentation_from_nextcloud() {
+    let path = "Talks/Aurora.pptx";
+    let server = Server::start();
+    server.data().put(path, pptx("Aurora"));
+    let (mut nc, _dir) = signed_in(&server, "sharing");
+    let ctx = egui::Context::default();
+    let mut app = app(&nc);
+    deckcraft_ui_egui::cloud_files::open_remote(&mut app, path);
+    until(&mut nc, &mut app, &ctx, "the presentation", |app| notes(app) == "Aurora");
+    let info = share(&nc, &app, "share.info", json!({})).unwrap();
+    assert_eq!((info["name"].as_str(), info["inCloud"].as_bool(), info["canShare"].as_bool()), (Some("Aurora.pptx"), Some(true), Some(true)));
+    let found = share(&nc, &app, "share.search", json!({"query": "bo"})).unwrap();
+    assert_eq!(found, json!([{"label": "Bo Lee", "detail": null, "type": "user", "shareWith": "bo"}]));
+    // Shared with Bo, who can edit, with a message.
+    share(&nc, &app, "share.add", json!({"type": "user", "shareWith": "bo", "edit": true, "note": "Have a look"})).unwrap();
+    let s = server.data().shares.clone();
+    assert_eq!(
+        (s[0]["path"].as_str(), s[0]["permissions"].as_i64(), s[0]["note"].as_str()),
+        (Some("/Talks/Aurora.pptx"), Some(EDIT), Some("Have a look"))
+    );
+    // The link: made once, then changed in place.
+    let link = share(&nc, &app, "share.link", json!({"edit": false, "expiration": null})).unwrap();
+    assert_eq!((link["type"].as_str(), link["edit"].as_bool()), (Some("link"), Some(false)));
+    assert!(link["url"].as_str().is_some_and(|u| u.contains("/s/")));
+    let again = share(&nc, &app, "share.link", json!({"edit": true, "expiration": null})).unwrap();
+    assert_eq!((again["id"].clone(), again["edit"].as_bool()), (link["id"].clone(), Some(true)));
+    let list = share(&nc, &app, "share.list", json!({})).unwrap();
+    assert_eq!(list.as_array().map(Vec::len), Some(2), "Bo and the link: {list}");
+    share(&nc, &app, "share.remove", json!({"id": link["id"]})).unwrap();
+    assert_eq!(server.data().shares.len(), 1);
+    nc.shutdown(&mut app);
+}
+
+#[test]
+fn a_new_presentation_is_uploaded_to_share_it() {
+    let server = Server::start();
+    let (mut nc, _dir) = signed_in(&server, "upload");
+    let ctx = egui::Context::default();
+    let mut app = SlideApp::new(Session::with_new(), Services { cloud: Some(nc.cloud()), ..Default::default() });
+    let info = share(&nc, &app, "share.info", json!({})).unwrap();
+    assert_eq!((info["signedIn"].as_bool(), info["inCloud"].as_bool()), (Some(true), Some(false)));
+    let up = share(&nc, &app, "share.upload", json!({})).unwrap();
+    assert_eq!((up["name"].as_str(), up["inCloud"].as_bool()), (Some("Presentation1.pptx"), Some(true)));
+    assert!(server.data().files.contains_key("SlideLogic/Presentation1.pptx"));
+    // Never saved here yet: it stays tied by its document, and its first save is its file.
+    assert_eq!(share(&nc, &app, "share.info", json!({})).unwrap()["inCloud"], true);
+    let second = share(&nc, &app, "share.upload", json!({})).unwrap();
+    assert_eq!(second["name"], "Presentation1 (2).pptx", "a name that's free there");
+    let dir = std::env::temp_dir().join(format!("slidelogic-upload-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let local = dir.join("Talk.pptx").to_string_lossy().to_string();
+    app.run("file.save", json!({"path": local})).unwrap();
+    nc.poll(&mut app, &ctx);
+    assert_eq!(nc.cloud().location_of(&local).as_deref(), Some("SlideLogic/Presentation1 (2).pptx"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_desktop_link_opens_the_presentation_once_signed_in_to_that_server() {
+    let server = Server::start();
+    server.data().put("Team/Pitch.pptx", pptx("Pitch"));
+    let (mut nc, _dir) = signed_in(&server, "link");
+    let ctx = egui::Context::default();
+    let mut app = app(&nc);
+    let link = format!("slidelogic://open?server={}&path={}", encode(&server.url), encode("/Team/Pitch.pptx"));
+    assert!(nc.open_link(&link));
+    until(&mut nc, &mut app, &ctx, "the linked presentation", |app| app.session.collab_active());
+    assert_eq!(notes(&app), "Pitch");
+    nc.shutdown(&mut app);
+
+    // Another server: File › Account asks to sign in there first, with its address filled in.
+    let mut app = self::app(&nc);
+    assert!(nc.open_link("slidelogic://open?server=https%3A%2F%2Fother.example&path=Talk.pptx"));
+    nc.poll(&mut app, &ctx);
+    assert_eq!(app.backstage.as_ref().map(|b| b.page), Some(deckcraft_ui_egui::backstage::Page::Account));
+    assert_eq!(app.cloud_files.server, "other.example");
+    assert!(server.data().requests.iter().all(|(_, p)| !p.contains("Talk.pptx")), "nothing asked of the wrong server");
 }

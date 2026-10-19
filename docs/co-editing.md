@@ -232,8 +232,9 @@ Known limits, accepted for now:
    a checkpoint snapshot; presence (who's on which slide, others' selections).
 3. **Done (2026-10-18).** Own-edit undo through the session, view-only members, checkpoints
    written by one member, shared links (files and folders), and the desktop app joining the same
-   session (signed in to Nextcloud, presentations opened from the File view). Not ported from
-   WordLogic: the Share dialog, and "Open in Desktop App" links from the browser.
+   session (signed in to Nextcloud, presentations opened from the File view, or from the browser's
+   Open in Desktop App through a `slidelogic://open` link). The Share dialog, as WordLogic's:
+   in the browser through the page, on the desktop through its Nextcloud sign-in.
 4. **Started (2026-10-18):** text merging wherever text is (shapes, groups, table cells, notes).
    Still to do: table rows and columns as edits of their own (so adding a row doesn't send the
    table whole); per-shape merging inside masters and layouts; per-property merging of one
@@ -243,6 +244,7 @@ Known limits, accepted for now:
 
 | Date | Change |
 |---|---|
+| 2026-10-18 | Share dialog (browser and desktop) and Open in Desktop App (`slidelogic://open` links, registered by the installers) |
 | 2026-10-18 | Phase 3 done: the desktop app signs in to Nextcloud, opens and saves presentations there, and co-edits with the browser; sessions keep to one co-editing protocol (`collab::PROTOCOL`) |
 | 2026-10-18 | Notes drafts take in others' typing and save to the slide they were written on; a session keeps to its newest build |
 | 2026-10-18 | Text merging in table cells, shapes inside groups and speaker notes, carets there following others' edits |

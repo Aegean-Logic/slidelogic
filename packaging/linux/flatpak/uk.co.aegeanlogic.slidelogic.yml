@@ -48,6 +48,7 @@ modules:
       - cargo --offline build --release --locked -p deckcraft
       - install -Dm755 target/release/deckcraft /app/bin/deckcraft
       - install -Dm644 packaging/linux/uk.co.aegeanlogic.slidelogic.desktop /app/share/applications/uk.co.aegeanlogic.slidelogic.desktop
+      - install -Dm644 packaging/linux/uk.co.aegeanlogic.slidelogic.links.desktop /app/share/applications/uk.co.aegeanlogic.slidelogic.links.desktop
       - install -Dm644 packaging/linux/uk.co.aegeanlogic.slidelogic.mime.xml /app/share/mime/packages/uk.co.aegeanlogic.slidelogic.xml
       - mkdir -p /app/share/icons && cp -R assets/app-icon/hicolor /app/share/icons/
       - >-

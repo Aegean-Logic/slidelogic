@@ -51,6 +51,16 @@
 //! Not before the app's first frame, though: until then egui has no fonts, and opening the
 //! presentation would panic. A tab opened in the background joins when it's first shown.
 //!
+//! Sharing (the Share dialog's cloud is the page, which has the user's Nextcloud session):
+//!
+//! - `deckcraft:cloud` (to the parent): `{ id, op, params }`, an operation of the Share dialog
+//!   (`deckcraft_ui_egui::share`; `params` as JSON text).
+//! - `deckcraft:cloud:reply` (from the parent): `{ id, ok, json?, error? }`, its answer (`json` as
+//!   JSON text when `ok`, else `error`).
+//! - `deckcraft:openDesktop` (to the parent, offered with `desktop=1` in the URL): Open in Desktop
+//!   App was chosen; the page opens the presentation in SlideLogic on this computer (a
+//!   `slidelogic://open` link).
+//!
 //! Only the parent window on the page's own origin is heard or answered. In host mode the app
 //! starts with no presentation (the page sends one), and the parent guards leaving the page.
 //!
@@ -64,6 +74,7 @@ use std::sync::Arc;
 
 use deckcraft_engine::DocState;
 use deckcraft_engine::model::Presentation;
+use deckcraft_ui_egui::cloud::{Cloud, CloudInbox};
 use deckcraft_ui_egui::{HostSave, Services, SlideApp};
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::JsValue;
@@ -90,6 +101,10 @@ const MAX_JSON_UNITS: u32 = collab_msg::MAX_JSON_BYTES as u32;
 const MAX_SHORT_UNITS: u32 = 1024;
 /// The most co-editing messages held for the app; past this the page has to rejoin.
 const MAX_COLLAB_QUEUE: usize = 4096;
+/// The largest answer to a sharing request taken from the page (JSON text).
+const MAX_CLOUD_REPLY_UNITS: u32 = 4 << 20;
+/// The most sharing answers held between two frames.
+const MAX_CLOUD_REPLIES: usize = 256;
 
 /// A message from the page, checked.
 enum FromPage {
@@ -99,6 +114,8 @@ enum FromPage {
     Reply(Reply),
     /// `deckcraft:collab:*`.
     Collab(collab_msg::FromPage),
+    /// `deckcraft:cloud:reply`: the answer to the Share dialog's request `id`.
+    CloudReply { id: u64, answer: Result<serde_json::Value, String> },
 }
 
 #[derive(Clone)]
@@ -127,6 +144,8 @@ pub struct Bridge {
     /// Where this person is, as last told to the parent.
     position: Rc<RefCell<String>>,
     ctx: Rc<RefCell<Option<egui::Context>>>,
+    /// The page's answers to the Share dialog's requests.
+    cloud: CloudInbox,
 }
 
 impl Bridge {
@@ -153,6 +172,7 @@ impl Bridge {
             app: Rc::default(),
             position: Rc::default(),
             ctx: Rc::default(),
+            cloud: CloudInbox::default(),
         })
     }
 
@@ -169,6 +189,30 @@ impl Bridge {
             if let Err(e) = bridge.post_save(&name, bytes, true, None) {
                 log::error!("couldn't hand {name} to the page: {e}");
             }
+        }));
+        // The page is also the Share dialog's cloud: it has the user's Nextcloud session.
+        let bridge = self.clone();
+        services.cloud = Some(Cloud::sharing(
+            Box::new(move |id, op, params| {
+                let params = params.to_string();
+                // Ids stay far below 2^53, so a JavaScript number holds them exactly.
+                bridge.send(&[
+                    ("type", "deckcraft:cloud".into()),
+                    ("id", JsValue::from_f64(id as f64)),
+                    ("op", op.into()),
+                    ("params", params.as_str().into()),
+                ]);
+            }),
+            self.cloud.clone(),
+        ));
+    }
+
+    /// `desktop=1`: the page can open the presentation in the desktop app (`deckcraft:openDesktop`,
+    /// to the page): the title bar offers Open in Desktop App.
+    pub fn offer_desktop(&self, services: &mut Services) {
+        let bridge = self.clone();
+        services.open_in_desktop = Some(Box::new(move || {
+            bridge.send(&[("type", "deckcraft:openDesktop".into())]);
         }));
     }
 
@@ -454,6 +498,20 @@ impl Bridge {
                 Reply::parse(&kind, number(data, "id"), string(data, "name", MAX_NAME_UNITS), string(data, "error", MAX_ERROR_UNITS))
                     .map(FromPage::Reply)
             }
+            "deckcraft:cloud:reply" => {
+                let id = number(data, "id").filter(|v| v.is_finite() && *v >= 0.0 && v.fract() == 0.0 && *v <= 9_007_199_254_740_991.0)?;
+                let ok = js_sys::Reflect::get(data, &JsValue::from_str("ok")).ok().and_then(|v| v.as_bool()).unwrap_or(false);
+                let answer = if ok {
+                    match string(data, "json", MAX_CLOUD_REPLY_UNITS) {
+                        Some(text) => serde_json::from_str(&text).map_err(|e| e.to_string()),
+                        None if present(data, "json") => Err("the answer was too large".to_string()),
+                        None => Ok(serde_json::Value::Null),
+                    }
+                } else {
+                    Err(string(data, "error", MAX_ERROR_UNITS).unwrap_or_else(|| "Nextcloud didn't answer".into()).chars().take(500).collect())
+                };
+                Some(FromPage::CloudReply { id: id as u64, answer })
+            }
             _ if kind.starts_with("deckcraft:collab:") => {
                 let flag = |key: &str| js_sys::Reflect::get(data, &JsValue::from_str(key)).ok().and_then(|v| v.as_bool());
                 let fields = Fields {
@@ -496,6 +554,17 @@ impl Bridge {
                 let mut replies = self.replies.borrow_mut();
                 if replies.len() < MAX_REPLIES {
                     replies.push(reply);
+                }
+            }
+            FromPage::CloudReply { id, answer } => {
+                {
+                    let mut answers = self.cloud.lock().unwrap_or_else(|e| e.into_inner());
+                    if answers.len() < MAX_CLOUD_REPLIES {
+                        answers.push((id, answer));
+                    }
+                }
+                if let Some(ctx) = self.ctx.borrow().as_ref() {
+                    ctx.request_repaint();
                 }
             }
             FromPage::Collab(msg) => {
