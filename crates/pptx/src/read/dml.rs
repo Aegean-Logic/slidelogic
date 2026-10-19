@@ -123,9 +123,21 @@ pub fn gradient(f: &El) -> Gradient {
 /// `blipFill` (either `a:` or `p:`) → picture fill, registering the image as media.
 pub fn blip_fill(imp: &mut Imp, part: &Part, bf: &El) -> Option<PictureFill> {
     let blip = bf.child("blip");
-    let media = blip.and_then(|b| media_ref(imp, part, b));
-    let media = media?;
+    let raster = blip.and_then(|b| media_ref(imp, part, b));
+    // An SVG picture (`asvg:svgBlip`, Office 2016) is the picture itself; the `a:blip` is its raster
+    // copy for older readers, which some files leave out.
+    let svg = blip
+        .and_then(|b| b.child("extLst"))
+        .and_then(|x| x.find("svgBlip"))
+        .and_then(|s| media_ref(imp, part, s))
+        .filter(|m| imp.media.iter().any(|i| i.id == *m && deckcraft_svg::is_svg(&i.data)));
+    let media = svg.or(raster)?;
     let mut pf = PictureFill { media, upright: !bf.bool("rotWithShape").unwrap_or(true), ..Default::default() };
+    if let (Some(svg), Some(raster)) = (svg, raster)
+        && svg != raster
+    {
+        pf.svg_fallback = Some(deckcraft_model::style::SvgFallback { svg, raster });
+    }
     if let Some(layer) = blip.and_then(|b| b.child("extLst")).and_then(|x| x.find("imgLayer"))
         && let Some(effect) = layer
             .elements()

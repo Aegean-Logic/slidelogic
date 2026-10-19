@@ -183,10 +183,17 @@ pub fn circle_gradient(focus: [f64; 4], bounds: Rect, tile: Rect) -> peniko::Gra
 /// Draw a picture fill into `bounds` (shape-local) honouring crop and stretch/tile modes; an animated
 /// GIF shows its frame at `gif_time` seconds.
 pub fn picture(ctx: &mut RenderContext, pres: &Presentation, pf: &PictureFill, bounds: Rect, m: Affine, gif_time: Option<f64>) {
-    let Some(item) = pres.media(pf.media) else {
+    let Some(mut item) = pres.media(pf.media) else {
         missing(ctx, bounds);
         return;
     };
+    // An SVG with text: its raster copy shows the text, which isn't drawn from SVG here.
+    let fallback = pf.svg_fallback_media().and_then(|f| pres.media(f));
+    if let Some(f) = fallback
+        && deckcraft_svg::has_text(&item.data)
+    {
+        item = f;
+    }
     let px_scale = crate::scale_of(m);
     let dest = match &pf.mode {
         PictureMode::Stretch { fill_rect } => {
@@ -205,7 +212,14 @@ pub fn picture(ctx: &mut RenderContext, pres: &Presentation, pf: &PictureFill, b
     // of it, magnified (#762).
     let want = (dest.width().abs().max(dest.height().abs()) * px_scale).max(1.0);
     let frame = gif_time.and_then(|t| images::gif_pixmap(&item.data, &pf.adjust, t));
-    let Some(pm) = frame.or_else(|| images::decode_for(&item.data, want, &pf.adjust)) else {
+    let decoded = frame.or_else(|| images::decode_for(&item.data, want, &pf.adjust));
+    // An SVG that can't be drawn: its raster copy, when it has one.
+    let decoded = decoded.or_else(|| {
+        let f = fallback.filter(|f| !std::ptr::eq(*f, item))?;
+        item = f;
+        images::decode_for(&f.data, want, &pf.adjust)
+    });
+    let Some(pm) = decoded else {
         missing(ctx, bounds);
         return;
     };

@@ -1,0 +1,12 @@
+[package]
+name = "deckcraft-svg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DeckCraft SVG pictures: sniffing, natural size, and drawing to RGBA or PNG through resvg, with no file or network access"
+
+[lints]
+workspace = true
+
+[dependencies]
+resvg = { workspace = true }

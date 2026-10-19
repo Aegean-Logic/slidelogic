@@ -147,6 +147,26 @@ pub struct PictureFill {
     /// picture; the original is kept to change or remove the effect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artistic: Option<Artistic>,
+    /// The raster copy a `.pptx` keeps next to an SVG picture, for readers that don't draw SVG.
+    /// It belongs to the SVG it was read with; see [`PictureFill::svg_fallback_media`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub svg_fallback: Option<SvgFallback>,
+}
+
+impl PictureFill {
+    /// The raster copy of `media`, while `media` is still the SVG it was read with (a picture
+    /// changed since keeps no stale copy).
+    pub fn svg_fallback_media(&self) -> Option<MediaId> {
+        self.svg_fallback.filter(|f| f.svg == self.media).map(|f| f.raster)
+    }
+}
+
+/// An SVG picture and the raster copy stored with it (`asvg:svgBlip` and its `a:blip`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SvgFallback {
+    pub svg: MediaId,
+    pub raster: MediaId,
 }
 
 /// An applied artistic effect: its `a14` name (e.g. `artisticBlur`) and the original picture.

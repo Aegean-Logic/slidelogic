@@ -378,7 +378,10 @@ fn fitted(s: &Session, bytes: &[u8]) -> (f64, f64) {
         .with_guessed_format()
         .ok()
         .and_then(|r| r.into_dimensions().ok())
-        .map(|(w, h)| (w as f64 * 0.75, h as f64 * 0.75))
+        .map(|(w, h)| (w as f64, h as f64))
+        // An SVG: its own size in CSS pixels.
+        .or_else(|| deckcraft_render::picture_natural_size(bytes))
+        .map(|(w, h)| (w * 0.75, h * 0.75))
         .unwrap_or((288.0, 216.0));
     let size = s.active().map(|d| d.doc.slide_size).unwrap_or(deckcraft_model::defaults::WIDE);
     let k = (size.width * 0.9 / w.max(1.0)).min(size.height * 0.9 / h.max(1.0)).min(1.0);
@@ -391,7 +394,7 @@ fn picture(s: &mut Session, p: &Value) -> Result<Value> {
     if !ct.starts_with("image/") {
         return Err(bad("insert.picture", format!("{name} is not a picture")));
     }
-    if ct != "image/svg+xml" && deckcraft_render::decode_image(&bytes).is_none() {
+    if deckcraft_render::decode_image(&bytes).is_none() {
         return Err(EngineError::Other(format!("{name}: the picture can't be read")));
     }
     let (w, h) = fitted(s, &bytes);
@@ -742,7 +745,7 @@ fn album_items(p: &Value) -> Result<Vec<AlbumItem>> {
         if !ct.starts_with("image/") {
             return Err(bad("insert.photoAlbum", format!("{name} is not a picture")));
         }
-        if ct != "image/svg+xml" && deckcraft_render::decode_image(&bytes).is_none() {
+        if deckcraft_render::decode_image(&bytes).is_none() {
             return Err(bad("insert.photoAlbum", format!("{name}: the picture can't be read")));
         }
         let (px_w, px_h) = image_px(&bytes);
@@ -765,6 +768,7 @@ fn image_px(bytes: &[u8]) -> (f64, f64) {
         .ok()
         .and_then(|r| r.into_dimensions().ok())
         .map(|(w, h)| (w as f64, h as f64))
+        .or_else(|| deckcraft_render::picture_natural_size(bytes))
         .filter(|(w, h)| *w > 0.0 && *h > 0.0)
         .unwrap_or((4.0, 3.0))
 }
