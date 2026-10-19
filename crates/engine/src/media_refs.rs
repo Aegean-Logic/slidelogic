@@ -31,6 +31,10 @@ macro_rules! walkers {
             if let Some(a) = &$($m)? p.artistic {
                 f(&$($m)? a.original);
             }
+            if let Some(s) = &$($m)? p.svg_fallback {
+                f(&$($m)? s.svg);
+                f(&$($m)? s.raster);
+            }
         }
 
         pub fn fill(x: &$($m)? Fill, f: &mut F) {

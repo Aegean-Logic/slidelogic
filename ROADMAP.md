@@ -131,6 +131,7 @@ app's JSON control channel (`deckcraft --control PORT`).
 
 | Date | What landed |
 |---|---|
+| 2026-10-19 | SVG pictures (SlideLogic fork): drawn at the size shown through `resvg` (new `svg` crate), including images embedded in them; read from `.pptx` with or without their PNG fallback and written back with one, so a save no longer drops SVG-only logos and artwork from masters and layouts; inserted SVGs take their own size. Text inside SVGs isn't drawn (the fallback shows it) |
 | 2026-10-18 | Co-editing phases 2–3 (SlideLogic fork, `docs/co-editing.md`): everyone with a presentation open from Nextcloud edits it together live; others' selections outlined in their colour with their name and their initials on the slide thumbnails; Undo and Redo take back only your own edits; view-only members follow along; checkpoints with state snapshots for late joiners. Web bridge `deckcraft:collab:*` messages; Nextcloud app 0.2.0 with the sequencer |
 | 2026-10-18 | Co-editing phase 1 (SlideLogic fork, `docs/co-editing.md`): edits become ops diffed from their results (slide, master and shape order by id; slides, shapes, masters and settings whole; media by id), a replica that rebases them in server order with own-edit undo, collision-free ids per client; a convergence fuzz (2–3 people, random commands, same presentation and .pptx). Pasted slides and slides from an outline now join their section |
 | 2026-10-15 | CLI: .txt and .md export includes table cell text, which it used to skip silently (#814) |
@@ -229,6 +230,7 @@ app's JSON control channel (`deckcraft --control PORT`).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | trivial | Progress log: SVG pictures (fork) |
 | 2026-10-18 | trivial | Progress log: co-editing phases 2–3 (fork) |
 | 2026-10-18 | trivial | Progress log: co-editing phase 1 in the engine (fork) |
 | 2026-10-14 | trivial | remote MCP checks reply IDs, envelopes and bounded newline framing (#718) |

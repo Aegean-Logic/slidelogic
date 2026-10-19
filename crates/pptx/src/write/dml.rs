@@ -98,7 +98,12 @@ pub fn blip_fill(w: &mut W, x: &mut Exp, o: &mut Out, tag: &str, pf: &PictureFil
     // An image that lives outside the package is a linked picture: `a:blip` names it through
     // `r:link`; `r:embed` may only reference a part inside the package.
     let linked = x.p.media(pf.media).is_some_and(|m| m.data.is_empty() && m.link.is_some());
-    let rid = x.media_rel(o, pf.media, "image").unwrap_or_else(|| x.placeholder_rel(o));
+    // An SVG picture: `a:blip` names its raster copy, and the SVG rides in an `asvg:svgBlip`.
+    let svg = if linked { None } else { x.svg_rels(o, pf) };
+    let rid = match &svg {
+        Some((raster, _)) => raster.clone(),
+        None => x.media_rel(o, pf.media, "image").unwrap_or_else(|| x.placeholder_rel(o)),
+    };
     w.open(tag, A::new().a("rotWithShape", if pf.upright { "0" } else { "1" }));
     let adj = &pf.adjust;
     let has_kids = pf.alpha.is_some()
@@ -109,7 +114,8 @@ pub fn blip_fill(w: &mut W, x: &mut Exp, o: &mut Out, tag: &str, pf: &PictureFil
         || adj.clear_color.is_some()
         || adj.bilevel.is_some()
         || adj.alpha_inv
-        || pf.artistic.is_some();
+        || pf.artistic.is_some()
+        || svg.is_some();
     let a = if linked { A::new().a("r:link", &rid) } else { A::new().a("r:embed", &rid) };
     if has_kids {
         w.open("a:blip", a);
@@ -146,21 +152,28 @@ pub fn blip_fill(w: &mut W, x: &mut Exp, o: &mut Out, tag: &str, pf: &PictureFil
         }
         // Artistic effect: the blip is the processed picture; the original rides in an
         // `a14:imgLayer` with the effect's name, as PowerPoint writes it.
-        if let Some(art) = &pf.artistic
-            && art.effect.starts_with("artistic")
-            && art.effect.chars().all(|c| c.is_ascii_alphanumeric())
-            && let Some(orig) = x.media_rel(o, art.original, "image")
-        {
+        let artistic = pf.artistic.as_ref().filter(|a| a.effect.starts_with("artistic") && a.effect.chars().all(|c| c.is_ascii_alphanumeric()));
+        let artistic = artistic.and_then(|a| Some((a, x.media_rel(o, a.original, "image")?)));
+        if artistic.is_some() || svg.is_some() {
             w.open0("a:extLst");
+        }
+        if let Some((art, orig)) = &artistic {
             w.open("a:ext", A::new().a("uri", "{BEBA8EAE-BF5A-486C-A8C5-ECC9F3942E4B}"));
             w.open("a14:imgProps", A::new().a("xmlns:a14", crate::opc::NS_A14));
-            w.open("a14:imgLayer", A::new().a("r:embed", &orig));
+            w.open("a14:imgLayer", A::new().a("r:embed", orig));
             w.open0("a14:imgEffect");
             w.empty0(&format!("a14:{}", art.effect));
             w.close("a14:imgEffect");
             w.close("a14:imgLayer");
             w.close("a14:imgProps");
             w.close("a:ext");
+        }
+        if let Some((_, svg_rid)) = &svg {
+            w.open("a:ext", A::new().a("uri", "{96DAC541-7B7A-43D3-8B79-37D633B846F1}"));
+            w.empty("asvg:svgBlip", A::new().a("xmlns:asvg", crate::opc::NS_ASVG).a("r:embed", svg_rid));
+            w.close("a:ext");
+        }
+        if artistic.is_some() || svg.is_some() {
             w.close("a:extLst");
         }
         w.close("a:blip");

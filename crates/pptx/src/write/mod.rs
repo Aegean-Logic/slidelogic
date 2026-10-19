@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use deckcraft_geom::Xfrm;
+use deckcraft_model::style::PictureFill;
 use deckcraft_model::text::{ListStyle, Paragraph, TextBody};
 use deckcraft_model::theme::Theme;
 use deckcraft_model::{
@@ -48,11 +49,16 @@ const RT_AUTHORS_MODERN: &str = "http://schemas.microsoft.com/office/2018/10/rel
 const CT_CORE: &str = "application/vnd.openxmlformats-package.core-properties+xml";
 const CT_APP: &str = "application/vnd.openxmlformats-officedocument.extended-properties+xml";
 
+/// Longer side, in pixels, of the PNG copy written for an SVG picture that has none.
+pub const SVG_FALLBACK_SIDE: u32 = 1024;
+
 /// Export state.
 pub struct Exp<'a> {
     pub p: &'a Presentation,
     pub pkg: PackageOut,
     media_parts: HashMap<MediaId, String>,
+    /// PNG copies made for SVG pictures that came without one, by SVG.
+    svg_pngs: HashMap<MediaId, String>,
     n_image: u32,
     n_media: u32,
     n_chart: u32,
@@ -162,6 +168,34 @@ impl Exp<'_> {
         }
         let part = self.media_part(id)?;
         Some(o.rels.add(kind, &opc::relative(&o.name, &part), false))
+    }
+    /// For an SVG picture, the relationships from `o` to its raster copy and to the SVG: the copy
+    /// it was read with, else a PNG drawn from the SVG ([`SVG_FALLBACK_SIDE`] px on its longer
+    /// side), else the transparent placeholder. `None` when the picture isn't an embedded SVG.
+    pub fn svg_rels(&mut self, o: &mut Out, pf: &PictureFill) -> Option<(String, String)> {
+        let m = self.p.media(pf.media)?;
+        if m.data.is_empty() || !deckcraft_svg::is_svg(&m.data) {
+            return None;
+        }
+        let svg = self.media_part(pf.media)?;
+        let raster = pf.svg_fallback_media().and_then(|r| self.media_part(r)).or_else(|| self.svg_png_part(pf.media));
+        let raster = match raster {
+            Some(part) => o.rels.add("image", &opc::relative(&o.name, &part), false),
+            None => self.placeholder_rel(o),
+        };
+        Some((raster, o.rels.add("image", &opc::relative(&o.name, &svg), false)))
+    }
+    /// A PNG part drawn from the SVG `id`, made once per export.
+    fn svg_png_part(&mut self, id: MediaId) -> Option<String> {
+        if let Some(p) = self.svg_pngs.get(&id) {
+            return Some(p.clone());
+        }
+        let png = deckcraft_svg::png(&self.p.media(id)?.data, SVG_FALLBACK_SIDE)?;
+        self.n_image += 1;
+        let name = format!("ppt/media/image{}.png", self.n_image);
+        self.pkg.binary(&name, "image/png", png);
+        self.svg_pngs.insert(id, name.clone());
+        Some(name)
     }
     /// A tiny transparent PNG for pictures whose image is missing.
     pub fn placeholder_rel(&mut self, o: &mut Out) -> String {
@@ -532,6 +566,7 @@ pub fn export(p: &Presentation, main_ct: &str) -> Result<Vec<u8>, PptxError> {
         p,
         pkg: PackageOut::default(),
         media_parts: HashMap::new(),
+        svg_pngs: HashMap::new(),
         n_image: 0,
         n_media: 0,
         n_chart: 0,

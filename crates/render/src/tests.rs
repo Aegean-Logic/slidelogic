@@ -1488,6 +1488,67 @@ fn metafile_pictures_draw_their_vectors() {
     }
 }
 
+/// A deck whose one picture (100,100, 400×200 pt) shows `svg`, with an optional raster
+/// copy recorded for it.
+fn svg_deck(svg: &[u8], copy: Option<Vec<u8>>) -> Presentation {
+    let mut p = Presentation::default();
+    let media = p.add_media("image1.svg", "image/svg+xml", svg.to_vec()).expect("media");
+    let svg_fallback = copy.map(|c| {
+        let raster = p.add_media("image2.png", "image/png", c).expect("media");
+        deckcraft_model::style::SvgFallback { svg: media, raster }
+    });
+    let fill = deckcraft_model::style::PictureFill { media, svg_fallback, ..Default::default() };
+    let sh = Shape { id: ShapeId(600), xfrm: Some(Xfrm::new(100.0, 100.0, 400.0, 200.0)), kind: ShapeKind::Picture { fill }, ..Default::default() };
+    std::sync::Arc::make_mut(&mut p.slides[0]).shapes = vec![sh];
+    p
+}
+
+const HALF_RED_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 1"><rect width="1" height="1" fill="#ff0000"/></svg>"##;
+
+#[test]
+fn svg_pictures_draw_their_vectors() {
+    let p = svg_deck(HALF_RED_SVG, None);
+    for scale in [0.5, 1.0, 3.0] {
+        let img = render_slide(&p, 0, &RenderOpts { scale, ..Default::default() });
+        let at = |x: f64, y: f64| img.pixel((x * scale) as u32, (y * scale) as u32);
+        let left = at(200.0, 200.0);
+        assert!(left[0] > 200 && left[1] < 60 && left[2] < 60, "left half red at {scale}: {left:?}");
+        let right = at(400.0, 200.0);
+        assert!(right[0] > 200 && right[1] > 200 && right[2] > 200, "right half empty at {scale}: {right:?}");
+        // Drawn at the size shown: the red edge is sharp, not a blurred upscale.
+        let edge = at(300.0 + 2.0 / scale, 200.0);
+        assert!(edge[1] > 200, "sharp edge at {scale}: {edge:?}");
+    }
+}
+
+#[test]
+fn an_svg_with_text_or_that_cant_be_drawn_shows_its_raster_copy() {
+    let blue =
+        deckcraft_svg::png(br##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="2" height="1" fill="#0000ff"/></svg>"##, 8)
+            .expect("png");
+    let with_text =
+        br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 1"><rect width="1" height="1" fill="#ff0000"/><text y="1">Hovis</text></svg>"##;
+    let broken = b"<svg xmlns='http://www.w3.org/2000/svg'><rect";
+    for svg in [&with_text[..], &broken[..]] {
+        let img = render_slide(&svg_deck(svg, Some(blue.clone())), 0, &RenderOpts { scale: 1.0, ..Default::default() });
+        let c = img.pixel(400, 200);
+        assert!(c[2] > 200 && c[0] < 60, "the blue copy shows: {c:?}");
+    }
+    // Without a copy, an SVG with text still draws its shapes.
+    let img = render_slide(&svg_deck(with_text, None), 0, &RenderOpts { scale: 1.0, ..Default::default() });
+    assert!(img.pixel(200, 200)[0] > 200);
+}
+
+#[test]
+fn broken_svgs_draw_nothing_and_never_panic() {
+    let mut cases: Vec<Vec<u8>> = (0..HALF_RED_SVG.len()).step_by(7).map(|n| HALF_RED_SVG[..n].to_vec()).collect();
+    cases.push(b"<svg xmlns='http://www.w3.org/2000/svg' width='1e30' height='1e30'/>".to_vec());
+    cases.push(b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 0 0'/>".to_vec());
+    for bytes in cases {
+        let _ = render_slide(&svg_deck(&bytes, None), 0, &RenderOpts { scale: 0.25, ..Default::default() });
+    }
+}
+
 #[test]
 fn broken_metafiles_draw_nothing_and_never_panic() {
     let wmf = half_red_wmf();

@@ -1,6 +1,6 @@
 # Where SlideLogic falls short of PowerPoint
 
-> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-14 · **Change:** major (community PR wave 2026-10-14: soak tests, PPTX corpus, comment threads (#70), embedded fonts, SmartArt Text Pane, Animation Pane timeline, Hunspell spelling, thesaurus, AutoCorrect, 14 new dialogs, pen pressure and trackpad gestures; duplicated entries and headers folded; previous: minor, 3-D bevel, camera and face lighting rendered) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
+> **Last reviewed:** 2026-10-14 · **Last updated:** 2026-10-19 · **Change:** minor (SVG pictures drawn and kept on save; previous: major, community PR wave 2026-10-14: soak tests, PPTX corpus, comment threads (#70), embedded fonts, SmartArt Text Pane, Animation Pane timeline, Hunspell spelling, thesaurus, AutoCorrect, 14 new dialogs, pen pressure and trackpad gestures; duplicated entries and headers folded; previous: minor, 3-D bevel, camera and face lighting rendered) · **Target:** Microsoft PowerPoint for Mac 16.113 (Microsoft 365)
 
 Every known shortfall, one entry each, ranked by how much it stops someone who presents with
 PowerPoint from switching. This is the work list: pick from the top. Numbers are summarized in
@@ -13,25 +13,24 @@ tests (calibration in [target-app-parity.md](target-app-parity.md#calibration-ho
 When a gap closes, delete its entry, update the parity doc it points to, and add a line to the
 revision history.
 
-## Ranked: the top 15
+## Ranked: the top 14
 
 | # | Gap | Category | Beta | Hours | Doc |
 |---|---|---|:-:|---|---|
 | 1 | PPTX corpus is only decks we author (no PowerPoint reference renders) | File format | B | 20–35 | [file-format-parity.md](file-format-parity.md) |
 | 2 | Data loss and crashes on common paths (#60, #40, #59) | Stability | B | 6–12 | this file |
 | 3 | PPTX round trip drops media options and rewind (#74, #77) | File format | B | 2–4 | [file-format-parity.md](file-format-parity.md) |
-| 4 | SVG pictures don't render (EMF/WMF do) | File format | B | 4–8 | [file-format-parity.md](file-format-parity.md) |
-| 5 | No localization: English only | Localization | B (infra + 5 languages) | 55–90 | [localization-parity.md](localization-parity.md) |
-| 6 | No printing | Feature | B | 5–8 | [file-format-parity.md](file-format-parity.md) |
-| 7 | Fonts: only Regular, Bold and Italic faces (#69) | Feature | B | 3–5 | [ui-parity.md](ui-parity.md) |
-| 8 | Image paste fails on Windows and Linux (#53) | Feature | B | 2–4 | [ui-parity.md](ui-parity.md) |
-| 9 | Presenter view isn't placed on the second display | Hardware | B | 3–5 | [slideshow-parity.md](slideshow-parity.md) |
-| 10 | Animation Pane: preview plays the whole slide, not from the selected effect (timeline done); 64 of ~190 effects | Feature | B (pane) | 8–14 | [animation-parity.md](animation-parity.md) |
-| 11 | Charts: data grid editing, elements, `chartex` types | Feature | B (data, elements) | 12–20 | [parity-checklist.md](parity-checklist.md) |
-| 12 | Format Shape pane thinner than PowerPoint's | UI/UX | B | 6–10 | [ui-parity.md](ui-parity.md) |
-| 13 | No native macOS menu bar | UI/UX | B | 3–5 | [ui-parity.md](ui-parity.md) |
-| 14 | PDF export rasterizes slide artwork | File format | B | 5–8 | [file-format-parity.md](file-format-parity.md) |
-| 15 | Slides rasterize on the CPU; no performance baseline | Performance / hardware | | 15–30 | [hardware-parity.md](hardware-parity.md) |
+| 4 | No localization: English only | Localization | B (infra + 5 languages) | 55–90 | [localization-parity.md](localization-parity.md) |
+| 5 | No printing | Feature | B | 5–8 | [file-format-parity.md](file-format-parity.md) |
+| 6 | Fonts: only Regular, Bold and Italic faces (#69) | Feature | B | 3–5 | [ui-parity.md](ui-parity.md) |
+| 7 | Image paste fails on Windows and Linux (#53) | Feature | B | 2–4 | [ui-parity.md](ui-parity.md) |
+| 8 | Presenter view isn't placed on the second display | Hardware | B | 3–5 | [slideshow-parity.md](slideshow-parity.md) |
+| 9 | Animation Pane: preview plays the whole slide, not from the selected effect (timeline done); 64 of ~190 effects | Feature | B (pane) | 8–14 | [animation-parity.md](animation-parity.md) |
+| 10 | Charts: data grid editing, elements, `chartex` types | Feature | B (data, elements) | 12–20 | [parity-checklist.md](parity-checklist.md) |
+| 11 | Format Shape pane thinner than PowerPoint's | UI/UX | B | 6–10 | [ui-parity.md](ui-parity.md) |
+| 12 | No native macOS menu bar | UI/UX | B | 3–5 | [ui-parity.md](ui-parity.md) |
+| 13 | PDF export rasterizes slide artwork | File format | B | 5–8 | [file-format-parity.md](file-format-parity.md) |
+| 14 | Slides rasterize on the CPU; no performance baseline | Performance / hardware | | 15–30 | [hardware-parity.md](hardware-parity.md) |
 
 ## Stability
 
@@ -97,15 +96,6 @@ Detail in [file-format-parity.md](file-format-parity.md).
   the `p188` modern part next to the legacy one.
 - **Impact:** a deck opened and saved silently loses show behaviour.
 - **Estimate:** 2–4 h. **Beta blocker.**
-
-### SVG pictures don't render
-- **Evidence:** `crates/render/src/images.rs` decodes through `image` 0.25 (PNG, JPEG, WebP, GIF,
-  TIFF, BMP), and EMF/WMF through `deckcraft-metafile` (ported from WordCraft: paths, fills, pens,
-  pattern and hatch brushes, bitmaps and text; rectangle clip regions are applied, EMF+ only
-  pictures play their EMF+ records).
-  Nothing reads SVG; PowerPoint's Insert Icons stores SVG with a PNG fallback.
-- **Impact:** SVG icons show only their raster fallback, and SVG files can't be inserted.
-- **Estimate:** 4–8 h (an SVG renderer through `resvg`-style crates).
 
 ### Template, slide-show and macro variants are saved as plain `.pptx`
 - **Evidence:** `crates/pptx/src/write/mod.rs` always writes the
@@ -355,6 +345,7 @@ Detail in [localization-parity.md](localization-parity.md).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-19 | minor | SVG pictures drawn (`crates/svg`, `resvg`) and kept on save with a PNG copy; the SVG gap (ranked 4) closed and the ranking renumbered |
 | 2026-10-14 | trivial | Fixed #718: remote MCP no longer accepts unrelated or buffered stale success; loopback regressions cover invalid envelopes, incomplete and oversized frames |
 | 2026-10-14 | minor | Community PR wave folded: one entry each for the soak tests (engine and UI), the PPTX corpus (seven owned corpus files), edit points / text warp / 3-D, proofing (Hunspell spelling, thesaurus, AutoCorrect), the smaller missing rows, dialogs (41 vs ~60; Print and Insert Object left) and pen/trackpad input; ranked rows 3, 4 and 10 de-duplicated (comment threads #70 and the pane timeline are done); the fixed command-palette entry (#79) removed |
 | 2026-10-13 | minor | EMF/WMF rectangle clip regions (`INTERSECTCLIPRECT`, `EXCLUDECLIPRECT`, `EXTSELECTCLIPRGN`) limit later drawing. EMF+ records remain |
