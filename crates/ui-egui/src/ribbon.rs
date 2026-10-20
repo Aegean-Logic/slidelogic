@@ -134,6 +134,14 @@ pub fn title_bar(app: &mut SlideApp, ui: &mut Ui) {
                 }
             });
         }
+        // Chat about the presentation in Nextcloud Talk (in the browser), as PowerPoint opens a
+        // file's Teams chat: for presentations in Nextcloud, on a server with Talk.
+        if has_doc
+            && crate::talk::available(app)
+            && icon_toggle(&mut right, Icon::Chat, "Chat about this file: its Nextcloud Talk conversation, in the browser", true, false).clicked()
+        {
+            let _ = app.run("app.chat", json!({}));
+        }
         // In the browser: carry on in SlideLogic on this computer, as PowerPoint for the web's
         // Open in Desktop App does (together with everyone still editing here).
         if has_doc

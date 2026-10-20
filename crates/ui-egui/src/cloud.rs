@@ -31,17 +31,25 @@ pub struct Cloud {
     pub files: bool,
     /// The cloud file a local file is the copy of (`folder/name.pptx`), if it is one.
     pub location: Option<Box<dyn Fn(&str) -> Option<String>>>,
+    /// Whether the cloud's server has chat (Nextcloud Talk), for "Chat about this file"; asked
+    /// every frame, so it answers from what the host already knows.
+    pub talk: Option<Box<dyn Fn() -> bool>>,
 }
 
 impl Cloud {
     /// A cloud for sharing only (the browser's: the page owns the files).
     pub fn sharing(request: Box<dyn Fn(u64, &str, Json)>, inbox: CloudInbox) -> Cloud {
-        Cloud { request, inbox, files: false, location: None }
+        Cloud { request, inbox, files: false, location: None, talk: None }
     }
 
     /// The cloud file `local` is the copy of, if any.
     pub fn location_of(&self, local: &str) -> Option<String> {
         self.location.as_ref().and_then(|f| f(local))
+    }
+
+    /// Whether the cloud's server has chat (Nextcloud Talk).
+    pub fn has_talk(&self) -> bool {
+        self.talk.as_ref().is_some_and(|f| f())
     }
 }
 

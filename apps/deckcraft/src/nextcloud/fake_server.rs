@@ -1,7 +1,8 @@
 //! A fake Nextcloud for tests, on a local port: WebDAV for one user's files (PROPFIND, GET, HEAD,
 //! PUT with ETags and `If-Match` / `If-None-Match`) and the SlideLogic app's co-editing sequencer
 //! (`/index.php/apps/deckcraft/collab/*`, as `deckcraft-nextcloud`'s `CollabService` answers:
-//! join pinned to an ETag, state snapshots, push, sync, checkpoint, leave). Plain HTTP/1.1 with
+//! join pinned to an ETag, state snapshots, push, sync, checkpoint, leave), and Nextcloud Talk's
+//! capability and file conversations (`talk`: a file in `talk_rooms` has one). Plain HTTP/1.1 with
 //! keep-alive, one thread per connection.
 
 use std::collections::HashMap;
@@ -58,6 +59,10 @@ pub struct Data {
     /// App routes called without `OCS-APIRequest: true` (Nextcloud's CSRF check would refuse
     /// them).
     pub without_ocs_header: Vec<String>,
+    /// Nextcloud Talk is installed.
+    pub talk: bool,
+    /// Files (ids) shared with someone: Talk has a conversation for them (`room{id}`).
+    pub talk_rooms: Vec<u64>,
     /// The sharing API's shares (as Nextcloud lists them: `id`, `path`, `share_type`, `share_with`,
     /// `permissions`, `url`, `note`, `expiration`).
     pub shares: Vec<Json>,
@@ -220,6 +225,25 @@ fn answer(d: &mut Data, req: &Request) -> Answer {
             serde_json::from_slice(&req.body).unwrap_or_default()
         };
         return collab(d, route, &params);
+    }
+    if let Some(endpoint) = path.strip_prefix("/ocs/v2.php/") {
+        if req.headers.get("ocs-apirequest").map(String::as_str) != Some("true") {
+            d.without_ocs_header.push(endpoint.to_string());
+        }
+        let ocs = |status: u16, data: Json| json_answer(status, json!({"ocs": {"meta": {"statuscode": status}, "data": data}}));
+        if endpoint == "cloud/capabilities" {
+            let mut capabilities = json!({"core": {}});
+            if d.talk {
+                capabilities["spreed"] = json!({"features": ["chat-v2"]});
+            }
+            return ocs(200, json!({"capabilities": capabilities}));
+        }
+        if let Some(id) = endpoint.strip_prefix("apps/spreed/api/v1/file/").filter(|_| d.talk) {
+            return match id.parse::<u64>() {
+                Ok(id) if d.talk_rooms.contains(&id) => ocs(200, json!({"token": format!("room{id}")})),
+                _ => ocs(404, json!([])),
+            };
+        }
     }
     json_answer(404, json!({}))
 }

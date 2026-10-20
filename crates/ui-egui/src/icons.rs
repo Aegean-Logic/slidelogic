@@ -275,6 +275,8 @@ icons! {
     Search => "search",
     Share => "share",
     CommentsBubble => "comments-bubble",
+    /// Chat about the file (Nextcloud Talk): two speech bubbles.
+    Chat => "chat",
     File => "file",
     Folder => "folder",
     Cloud => "cloud",
@@ -2231,6 +2233,10 @@ fn draw(p: &Pen<'_>, icon: Icon) {
             p.dot((18.0, 18.5), 3.0, B);
         }
         I::CommentsBubble => p.bubble(2.5, 3.5, 21.5, 17.0, N, K),
+        I::Chat => {
+            p.rline(&[(8.5, 7.0), (8.5, 2.5), (21.5, 2.5), (21.5, 12.0), (19.5, 12.0), (19.5, 15.5), (16.5, 12.0)], 1.5, K);
+            p.bubble(2.5, 7.0, 16.5, 16.5, N, K);
+        }
         I::File => {
             p.page(4.5, 2.0, 19.5, 22.0, N, K);
             p.seg((8.0, 12.5), (16.0, 12.5), B);
