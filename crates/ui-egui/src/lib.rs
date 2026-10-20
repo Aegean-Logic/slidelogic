@@ -19,6 +19,7 @@ pub mod eyedropper;
 pub mod fillui;
 pub mod icons;
 pub mod media;
+pub mod mentions;
 pub mod menus;
 pub mod notes;
 pub mod opening;
@@ -504,6 +505,8 @@ pub struct SlideApp {
     pub cloud_files: cloud_files::CloudFiles,
     /// The Share dialog, when open ([`share`]).
     pub share: Option<share::ShareDialog>,
+    /// `@mentions` in comments: the people picker and the notifications under way.
+    pub mentions: mentions::Mentions,
     pending_urls: Vec<String>,
     /// Text for the system clipboard from a Copy or Cut command, handed over on the next frame.
     pending_copy: Option<String>,
@@ -603,6 +606,7 @@ impl SlideApp {
             selpane: selpane::State::default(),
             cloud_files: cloud_files::CloudFiles::default(),
             share: None,
+            mentions: Default::default(),
             doc_window: None,
             sorter: sorter::State::default(),
             slides_focused: false,
@@ -1889,6 +1893,7 @@ impl SlideApp {
         toast::show(self, &ctx);
         cloud_files::show(self, &ctx);
         share::show(self, &ctx);
+        mentions::show(self, &ctx);
         dialogs::show(self, &ctx);
         menus::palette(self, &ctx);
         for url in std::mem::take(&mut self.pending_urls) {

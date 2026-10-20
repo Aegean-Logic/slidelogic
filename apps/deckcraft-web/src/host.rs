@@ -54,7 +54,8 @@
 //! Sharing (the Share dialog's cloud is the page, which has the user's Nextcloud session):
 //!
 //! - `deckcraft:cloud` (to the parent): `{ id, op, params }`, an operation of the Share dialog
-//!   (`deckcraft_ui_egui::share`; `params` as JSON text).
+//!   (`deckcraft_ui_egui::share`) or of `@mentions` (`deckcraft_ui_egui::mentions`:
+//!   `people.search`, `mention.notify`) (`params` as JSON text).
 //! - `deckcraft:cloud:reply` (from the parent): `{ id, ok, json?, error? }`, its answer (`json` as
 //!   JSON text when `ok`, else `error`).
 //! - `deckcraft:openDesktop` (to the parent, offered with `desktop=1` in the URL): Open in Desktop

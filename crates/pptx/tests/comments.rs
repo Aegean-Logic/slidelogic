@@ -29,6 +29,7 @@ fn deck() -> Presentation {
                 },
             ],
             shape: None,
+            ..Default::default()
         },
         Comment {
             author: "Bob".into(),
@@ -40,6 +41,7 @@ fn deck() -> Presentation {
             resolved: false,
             replies: vec![],
             shape: None,
+            ..Default::default()
         },
     ];
     p
@@ -205,4 +207,37 @@ fn modern_only_package_imports() {
     assert_eq!(b[0].replies.len(), 2);
     assert!(b[0].resolved);
     assert_eq!((b[0].x, b[0].y), (90.0, 45.0), "modern positions are EMU");
+}
+
+/// Comment ids and `@mentions` survive a save: the GUID PowerPoint uses as the comment id, and
+/// the mentions in SlideLogic's extension of the comment. The modern part declares every prefix
+/// it uses, so XML readers (PowerPoint's) accept it.
+#[test]
+fn ids_and_mentions_round_trip() {
+    use deckcraft_model::{Mention, Person, locate_mentions};
+    let mut p = deck();
+    let ann = Person { name: "Ann Lee".into(), user_id: "ann".into(), provider: "Nextcloud".into() };
+    let s = Arc::make_mut(&mut p.slides[0]);
+    s.comments[0].id = "{0A1B2C3D-0000-4000-8000-00000000AB12}".into();
+    s.comments[0].text = "😀 @Ann Lee look\nsecond line".into();
+    s.comments[0].mentions = locate_mentions(&s.comments[0].text, std::slice::from_ref(&ann));
+    s.comments[0].replies[0].text = "ok @Ann Lee".into();
+    s.comments[0].replies[0].mentions = locate_mentions("ok @Ann Lee", std::slice::from_ref(&ann));
+    // A mention past the text's end is not written.
+    s.comments[1].mentions = vec![Mention { start: 50, len: 3, person: ann.clone() }];
+    let bytes = deckcraft_pptx::export(&p).expect("export");
+    let modern = part(&bytes, "ppt/comments/modernComment1.xml");
+    assert!(modern.contains(r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#), "{modern}");
+    assert!(modern.contains(r#"id="{0A1B2C3D-0000-4000-8000-00000000AB12}""#), "{modern}");
+    assert_eq!(modern.matches("<al:mention ").count(), 2, "{modern}");
+    let q = deckcraft_pptx::import(&bytes).expect("import");
+    let b = &q.slides[0].comments;
+    assert_eq!(b[0].id, "{0A1B2C3D-0000-4000-8000-00000000AB12}");
+    assert_eq!(b[0].mentions, vec![Mention { start: 2, len: 8, person: ann.clone() }]);
+    assert_eq!(b[0].replies[0].mentions.len(), 1);
+    assert!(b[1].mentions.is_empty());
+    // Comments made without an id get PowerPoint-shaped ones that stay the same on the next save.
+    assert!(b[1].id.starts_with('{') && b[1].id.len() == 38, "{}", b[1].id);
+    let again = deckcraft_pptx::import(&deckcraft_pptx::export(&q).expect("export")).expect("import");
+    assert_eq!(again.slides[0].comments[1].id, b[1].id);
 }

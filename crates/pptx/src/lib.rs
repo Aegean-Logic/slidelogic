@@ -30,6 +30,21 @@ pub(crate) const SECTION_EXT_URI: &str = "{521415D9-36F7-43E2-AB2F-B90AF26B5E84}
 /// Extension URI of the modern-comments anchor in a slide (names the threaded comment part).
 pub(crate) const COMMENTS_EXT_URI: &str = "{6950BFC3-D8DA-4A85-94F7-54DA5524770B}";
 
+/// Extension URI of SlideLogic's `@mentions` in a modern comment (`p188:cm` / `p188:reply`
+/// `extLst`): PowerPoint's comment schema has no mention element, and readers skip extensions
+/// they don't know.
+pub(crate) const MENTIONS_EXT_URI: &str = "{A3C6E1F2-6B1D-4C9A-9E35-AE6E0FFC1D01}";
+
+/// Namespace of the mention list in that extension.
+pub(crate) const NS_MENTIONS: &str = "http://schemas.aegeanlogic.co.uk/slidelogic/2026/mentions";
+
+/// A GUID as PowerPoint writes comment ids: `{8-4-4-4-12}` hex digits.
+pub(crate) fn is_guid(s: &str) -> bool {
+    let Some(inner) = s.strip_prefix('{').and_then(|t| t.strip_suffix('}')) else { return false };
+    let parts: Vec<&str> = inner.split('-').collect();
+    parts.len() == 5 && parts.iter().zip([8, 4, 4, 4, 12]).all(|(p, n)| p.len() == n && p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PptxError {
     #[error("not a PPTX file: {0}")]

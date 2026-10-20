@@ -1163,6 +1163,7 @@ fn read_comments(pkg: &Package, pres: &Part, root: &El, modern: bool) -> Vec<Com
             String::new()
         };
         let pos = e.child("pos");
+        let mentions = read_mentions(e, &text);
         let replies = if depth < 4 {
             e.child("replyLst").map(|l| l.children_named("reply").take(1000).map(|r| one(r, authors, depth + 1, scale)).collect()).unwrap_or_default()
         } else {
@@ -1178,9 +1179,37 @@ fn read_comments(pkg: &Package, pres: &Part, root: &El, modern: bool) -> Vec<Com
             resolved: e.attr("status") == Some("resolved"),
             replies,
             shape: None,
+            id: e.attr("id").filter(|id| crate::is_guid(id)).unwrap_or("").to_string(),
+            mentions,
         }
     }
     root.children_named("cm").take(10_000).map(|c| one(c, &authors, 0, scale)).collect()
+}
+
+/// The `@mentions` of a modern comment, from SlideLogic's extension ([`crate::MENTIONS_EXT_URI`]):
+/// ones outside the text, overlapping another or naming no one are dropped.
+fn read_mentions(e: &El, text: &str) -> Vec<deckcraft_model::Mention> {
+    let n = text.chars().count();
+    let mut out: Vec<deckcraft_model::Mention> = vec![];
+    let Some(list) = e.child("extLst") else { return out };
+    for ext in list.children_named("ext").filter(|x| x.attr("uri") == Some(crate::MENTIONS_EXT_URI)) {
+        for m in ext.children_named("mentionLst").flat_map(|l| l.children_named("mention")).take(64) {
+            let num = |k: &str| m.attr(k).and_then(|v| v.parse::<usize>().ok());
+            let (Some(start), Some(len)) = (num("start"), num("len")) else { continue };
+            let name = m.attr("name").unwrap_or("").to_string();
+            if len == 0 || start.saturating_add(len) > n || name.is_empty() || out.iter().any(|o| start < o.start + o.len && o.start < start + len) {
+                continue;
+            }
+            let person = deckcraft_model::Person {
+                name,
+                user_id: m.attr("userId").unwrap_or("").to_string(),
+                provider: m.attr("providerId").unwrap_or("").to_string(),
+            };
+            out.push(deckcraft_model::Mention { start, len, person });
+        }
+    }
+    out.sort_by_key(|m| m.start);
+    out
 }
 
 fn read_show(sp: &El, shows: &HashMap<String, String>) -> ShowSettings {

@@ -1257,13 +1257,24 @@ fn body(app: &mut SlideApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         }
         "zoom" => zoom_dialog(app, ui, d),
         "comment" => {
-            let mut v = d.get("text", "");
-            ui.add(egui::TextEdit::multiline(&mut v).hint_text("Start a conversation").desired_rows(4).desired_width(320.0));
-            d.fields.insert("text".into(), v.clone());
+            // The text and the people @mentioned in it, kept while the dialog is open.
+            let key = egui::Id::new("comment-dialog-draft");
+            let mut draft: crate::mentions::Draft = ui.data_mut(|m| m.get_temp(key)).unwrap_or_default();
+            ui.allocate_ui(egui::vec2(320.0, 0.0), |ui| {
+                crate::mentions::editor(app, ui, key.with("box"), &mut draft, true, "Start a conversation (@ to mention)", 320.0);
+            });
+            d.fields.insert("text".into(), draft.text.clone());
             let (ok, cancel) = buttons(ui, "Post");
-            if ok && !v.trim().is_empty() {
-                run(app, "comment.add", json!({"text": v}));
+            if ok && !draft.text.trim().is_empty() {
+                if let Ok(answer) = app.run("comment.add", json!({"text": draft.text, "mentions": draft.people()})) {
+                    crate::mentions::posted(app, &answer, &draft.text);
+                }
                 app.ui.pane = Some("comments".into());
+            }
+            if ok || cancel {
+                ui.data_mut(|m| m.remove::<crate::mentions::Draft>(key));
+            } else {
+                ui.data_mut(|m| m.insert_temp(key, draft));
             }
             ok || cancel
         }

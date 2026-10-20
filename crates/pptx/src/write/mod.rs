@@ -911,7 +911,7 @@ fn author_slot(c: &Comment, authors: &mut Vec<(String, String, u32)>) -> usize {
 /// the flattened legacy part cannot express (issue #70).
 fn modern_comments_xml(list: &[Comment], part: &str, authors: &mut Vec<(String, String, u32)>) -> Vec<u8> {
     let mut w = W::new();
-    w.open("p188:cmLst", A::new().a("xmlns:p188", NS_P188));
+    w.open("p188:cmLst", A::new().a("xmlns:a", NS_A).a("xmlns:p", NS_P).a("xmlns:p188", NS_P188));
     for (ti, c) in list.iter().take(10_000).enumerate() {
         modern_comment(&mut w, c, part, ti, authors, 0);
     }
@@ -923,7 +923,8 @@ fn modern_comment(w: &mut W, c: &Comment, part: &str, ti: usize, authors: &mut V
     let ai = author_slot(c, authors);
     let author = authors.get(ai).map(|(n, _, _)| n.clone()).unwrap_or_default();
     let dt = if valid_date(&c.date) { c.date.clone() } else { "2024-01-01T00:00:00.000".into() };
-    let mut a = A::new().a("id", crate::tables::guid(&format!("deckcraft-comment:{part}:{ti}"))).a("authorId", author_guid(&author)).a("created", dt);
+    let id = if crate::is_guid(&c.id) { c.id.clone() } else { crate::tables::guid(&format!("deckcraft-comment:{part}:{ti}")) };
+    let mut a = A::new().a("id", id).a("authorId", author_guid(&author)).a("created", dt);
     if c.resolved {
         a = a.a("status", "resolved");
     }
@@ -937,21 +938,44 @@ fn modern_comment(w: &mut W, c: &Comment, part: &str, ti: usize, authors: &mut V
             let ri_ai = author_slot(r, authors);
             let r_author = authors.get(ri_ai).map(|(n, _, _)| n.clone()).unwrap_or_default();
             let rdt = if valid_date(&r.date) { r.date.clone() } else { "2024-01-01T00:00:00.000".into() };
-            let mut ra = A::new()
-                .a("id", crate::tables::guid(&format!("deckcraft-comment:{part}:{ti}:{ri}")))
-                .a("authorId", author_guid(&r_author))
-                .a("created", rdt);
+            let rid = if crate::is_guid(&r.id) { r.id.clone() } else { crate::tables::guid(&format!("deckcraft-comment:{part}:{ti}:{ri}")) };
+            let mut ra = A::new().a("id", rid).a("authorId", author_guid(&r_author)).a("created", rdt);
             if r.resolved {
                 ra = ra.a("status", "resolved");
             }
             w.open("p188:reply", ra);
             tx_body(w, &r.text);
+            mentions_ext(w, r);
             w.close("p188:reply");
         }
         w.close("p188:replyLst");
     }
     tx_body(w, &c.text);
+    mentions_ext(w, c);
     w.close("p188:cm");
+}
+
+/// A comment's `@mentions` in SlideLogic's own extension ([`crate::MENTIONS_EXT_URI`]): each
+/// mention's characters in the text and who it is.
+fn mentions_ext(w: &mut W, c: &Comment) {
+    let n = c.text.chars().count();
+    let valid: Vec<_> = c.mentions.iter().filter(|m| m.len > 0 && m.start.saturating_add(m.len) <= n && !m.person.name.is_empty()).take(64).collect();
+    if valid.is_empty() {
+        return;
+    }
+    w.open0("p188:extLst");
+    w.open("p:ext", A::new().a("uri", crate::MENTIONS_EXT_URI));
+    w.open("al:mentionLst", A::new().a("xmlns:al", crate::NS_MENTIONS));
+    for m in valid {
+        let provider = if m.person.provider.is_empty() { "None" } else { &m.person.provider };
+        w.empty(
+            "al:mention",
+            A::new().a("start", m.start).a("len", m.len).a("name", &m.person.name).a("userId", &m.person.user_id).a("providerId", provider),
+        );
+    }
+    w.close("al:mentionLst");
+    w.close("p:ext");
+    w.close("p188:extLst");
 }
 
 /// An `a:txBody` with one paragraph per line, the shape the reader re-joins with `\n`.

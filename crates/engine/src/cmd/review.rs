@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use deckcraft_model::Comment;
+use deckcraft_model::{Comment, Person, locate_mentions};
 use serde_json::{Value, json};
 
 use super::*;
@@ -10,8 +10,33 @@ use crate::{Result, Session, Target, UiRequest};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("comment.add", "New Comment", ["Review", "Comments"], Some("Cmd+Alt+M"), "{text, x?, y?, id?: shape}", has_slide, add),
-        cmd!("comment.reply", "Reply", ["Comments"], None, "{index, text}", has_slide, reply),
+        cmd!(
+            "comment.add",
+            "New Comment",
+            ["Review", "Comments"],
+            Some("Cmd+Alt+M"),
+            "{text, x?, y?, id?: shape, mentions?: [{name, id, provider?}]} → {index, anchor, mentions} (each person's first `@Name` becomes a mention)",
+            has_slide,
+            add
+        ),
+        cmd!(
+            "comment.reply",
+            "Reply",
+            ["Comments"],
+            None,
+            "{index, text, mentions?: [{name, id, provider?}]} → {index, anchor, mentions}",
+            has_slide,
+            reply
+        ),
+        cmd!(
+            noundo "comment.goTo",
+            "Go to Comment",
+            [],
+            None,
+            "{anchor: comment id} (a mention's link: shows the comment's slide) → {slide, index}",
+            has_slide,
+            go_to
+        ),
         cmd!("comment.delete", "Delete Comment", ["Review", "Comments"], None, "{index? | all?: bool}", has_slide, delete),
         cmd!("comment.resolve", "Resolve Thread", ["Comments"], None, "{index, resolved?: bool}", has_slide, resolve),
         cmd!(query "comment.list", "Comments", [], None, "{slide?} → comments", has_slide, list),
@@ -114,11 +139,16 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let author = s.prefs.author.clone();
     let shape = id_param(p, "id", "comment.add")?.or_else(|| s.active().and_then(|d| d.selection.shapes.first().copied()));
     let (x, y) = (f64_or(p, "x", 10.0), f64_or(p, "y", 10.0));
+    let mentions = locate_mentions(&text, &people_param(p));
+    let people: Vec<Value> = mentions.iter().map(|m| person_json(&m.person)).collect();
     s.edit(|doc, sel| {
         let sl = Arc::make_mut(doc.slides.get_mut(sel.slide).ok_or_else(|| bad("comment.add", "no slide"))?);
         let initials: String = author.split_whitespace().filter_map(|w| w.chars().next()).collect();
-        sl.comments.push(Comment { author: author.clone(), initials, text, date: now(), x, y, resolved: false, replies: vec![], shape });
-        Ok(json!({"index": sl.comments.len() - 1}))
+        let id = comment_guid(&format!("{}:{}:{author}:{text}:{}", now_secs(), sl.id, sl.comments.len()));
+        let c =
+            Comment { author: author.clone(), initials, text, date: now(), x, y, resolved: false, replies: vec![], shape, id: id.clone(), mentions };
+        sl.comments.push(c);
+        Ok(json!({"index": sl.comments.len() - 1, "anchor": id, "mentions": people}))
     })
 }
 
@@ -126,13 +156,80 @@ fn reply(s: &mut Session, p: &Value) -> Result<Value> {
     let i = usize_param(p, "index").ok_or_else(|| bad("comment.reply", "missing `index`"))?;
     let text = str_param(p, "text").unwrap_or("").to_string();
     let author = s.prefs.author.clone();
+    let mentions = locate_mentions(&text, &people_param(p));
+    let people: Vec<Value> = mentions.iter().map(|m| person_json(&m.person)).collect();
     s.edit(|doc, sel| {
         let sl = Arc::make_mut(doc.slides.get_mut(sel.slide).ok_or_else(|| bad("comment.reply", "no slide"))?);
+        let slide_id = sl.id;
         let c = sl.comments.get_mut(i).ok_or_else(|| bad("comment.reply", "no such comment"))?;
-        c.replies.push(Comment { author, text, date: now(), ..Default::default() });
-        Ok(())
+        // A reply's link opens its thread, which gets an id if a file gave it none.
+        if c.id.is_empty() {
+            c.id = comment_guid(&format!("{}:{slide_id}:{i}:{}", now_secs(), c.text));
+        }
+        let id = comment_guid(&format!("{}:{slide_id}:{i}:{author}:{text}:{}", now_secs(), c.replies.len()));
+        c.replies.push(Comment { author, text, date: now(), id, mentions, ..Default::default() });
+        Ok(json!({"index": i, "anchor": c.id, "mentions": people}))
+    })
+}
+
+/// At most this many people can be mentioned in one comment.
+const MAX_MENTIONED: usize = 32;
+
+/// The `mentions` param: `[{name, id, provider?}]`, people without a name left out.
+fn people_param(p: &Value) -> Vec<Person> {
+    let Some(list) = p.get("mentions").and_then(Value::as_array) else { return vec![] };
+    let text = |v: &Value, k: &str, max: usize| v.get(k).and_then(Value::as_str).map(|t| t.chars().take(max).collect::<String>()).unwrap_or_default();
+    list.iter()
+        .take(MAX_MENTIONED)
+        .map(|v| {
+            let user_id = text(v, "id", 255);
+            let provider = match text(v, "provider", 64) {
+                p if p.is_empty() && !user_id.is_empty() => "Nextcloud".to_string(),
+                p => p,
+            };
+            Person { name: text(v, "name", 255), user_id, provider }
+        })
+        .filter(|p| !p.name.trim().is_empty())
+        .collect()
+}
+
+fn person_json(p: &Person) -> Value {
+    json!({"name": p.name, "id": p.user_id, "provider": p.provider})
+}
+
+/// A GUID for a new comment, from `seed` (the time, the slide, the author and the text, so two
+/// people commenting at once get different ones), shaped as PowerPoint writes comment ids.
+fn comment_guid(seed: &str) -> String {
+    // FNV-1a, twice with different offsets: 128 bits.
+    let hash = |offset: u64| seed.bytes().fold(offset, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3));
+    let (a, b) = (hash(0xCBF2_9CE4_8422_2325), hash(0x6C62_272E_07BB_0142));
+    format!("{{{:08X}-{:04X}-4{:03X}-{:04X}-{:012X}}}", a >> 32, (a >> 16) & 0xFFFF, a & 0xFFF, ((b >> 48) & 0x3FFF) | 0x8000, b & 0xFFFF_FFFF_FFFF)
+}
+
+/// Shows the comment with id `anchor` (a mention's link): selects its slide.
+fn go_to(s: &mut Session, p: &Value) -> Result<Value> {
+    let anchor = str_param(p, "anchor").unwrap_or("").trim().to_string();
+    let found = {
+        let doc = &s.doc()?.doc;
+        doc.slides.iter().enumerate().find_map(|(si, sl)| {
+            sl.comments
+                .iter()
+                .position(|c| {
+                    !anchor.is_empty() && (c.id.eq_ignore_ascii_case(&anchor) || c.replies.iter().any(|r| r.id.eq_ignore_ascii_case(&anchor)))
+                })
+                .map(|ci| (si, ci))
+        })
+    };
+    let (slide, index) = found.ok_or_else(|| bad("comment.goTo", "no such comment"))?;
+    s.select(|doc, sel| {
+        sel.slide = slide;
+        sel.slides = doc.slides.get(slide).map(|x| vec![x.id]).unwrap_or_default();
+        sel.shapes.clear();
+        sel.text = None;
+        sel.cells = None;
+        sel.target = Target::Slides;
     })?;
-    ok()
+    Ok(json!({"slide": slide, "index": index}))
 }
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
@@ -711,6 +808,30 @@ mod tests {
     use serde_json::json;
 
     use crate::Session;
+
+    #[test]
+    fn mentions_ids_and_go_to() {
+        let mut s = Session::with_new();
+        let ann = json!({"name": "Ann Lee", "id": "ann"});
+        let r = s.execute("comment.add", &json!({"text": "@Ann Lee look", "mentions": [ann]})).unwrap();
+        let anchor = r["anchor"].as_str().unwrap().to_string();
+        assert!(anchor.starts_with('{') && anchor.len() == 38, "{anchor}");
+        assert_eq!(r["mentions"], json!([{"name": "Ann Lee", "id": "ann", "provider": "Nextcloud"}]));
+        // A picked person whose `@Name` was edited away isn't mentioned.
+        let r = s.execute("comment.reply", &json!({"index": 0, "text": "thanks @Ann", "mentions": [ann]})).unwrap();
+        assert_eq!((r["anchor"].as_str(), r["mentions"].clone()), (Some(anchor.as_str()), json!([])));
+        let c = s.doc().unwrap().doc.slides[0].comments[0].clone();
+        assert_eq!((c.mentions.len(), c.mentions[0].start, c.mentions[0].len), (1, 0, 8));
+        assert!(!c.replies[0].id.is_empty() && c.replies[0].id != c.id);
+        s.execute("slide.new", &json!({})).unwrap();
+        let r = s.execute("comment.goTo", &json!({"anchor": anchor.to_lowercase()})).unwrap();
+        assert_eq!((r["slide"].as_u64(), r["index"].as_u64()), (Some(0), Some(0)));
+        assert_eq!(s.doc().unwrap().selection.slide, 0);
+        let reply_id = c.replies[0].id.clone();
+        s.execute("slide.new", &json!({})).unwrap();
+        assert_eq!(s.execute("comment.goTo", &json!({"anchor": reply_id})).unwrap()["slide"], 0);
+        assert!(s.execute("comment.goTo", &json!({"anchor": "{nope}"})).is_err());
+    }
 
     #[test]
     fn previous_and_next_comment_walk_the_deck() {
