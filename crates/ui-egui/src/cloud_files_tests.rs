@@ -34,7 +34,7 @@ fn cloud(local: String) -> (Cloud, Arc<Mutex<Vec<(String, Json)>>>) {
         };
         answers.lock().unwrap().push((id, Ok(answer)));
     };
-    (Cloud { request: Box::new(request), inbox, files: true, location: None }, asked)
+    (Cloud { request: Box::new(request), inbox, files: true, location: None, talk: None }, asked)
 }
 
 fn harness(app: SlideApp) -> Harness<'static, SlideApp> {
@@ -114,4 +114,70 @@ fn without_a_cloud_the_file_view_has_no_nextcloud() {
     h.state_mut().open_backstage(Page::Account);
     h.run_steps(3);
     h.get_by_label_contains("SlideLogic has no accounts");
+}
+
+/// A presentation opened from a copy of a Nextcloud file, with a cloud that has Talk when
+/// `talk` holds `talk.open`'s answer.
+fn chat_app(name: &str, talk: Arc<Mutex<Option<Result<Json, String>>>>) -> (Harness<'static, SlideApp>, Arc<Mutex<Vec<String>>>) {
+    let dir = std::env::temp_dir().join(format!("slidelogic-chat-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let local = dir.join("Aurora.pptx").to_string_lossy().to_string();
+    let mut s = Session::with_new();
+    std::fs::write(&local, deckcraft_engine::cmd::file::save_bytes(&s.active().unwrap().doc, "pptx").unwrap()).unwrap();
+    s.execute("file.open", &json!({"path": local})).unwrap();
+    let inbox = CloudInbox::default();
+    let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let (answers, log, has) = (inbox.clone(), asked.clone(), talk.clone());
+    let request = move |id: u64, op: &str, _: Json| {
+        log.lock().unwrap().push(op.to_string());
+        let answer = match op {
+            "talk.open" => talk.lock().unwrap().clone().unwrap_or_else(|| Err("no Talk".into())),
+            _ => Ok(json!({})),
+        };
+        answers.lock().unwrap().push((id, answer));
+    };
+    let cloud = Cloud {
+        request: Box::new(request),
+        inbox,
+        files: true,
+        location: Some(Box::new(move |l: &str| (l == local).then(|| "Talks/Aurora.pptx".to_string()))),
+        talk: Some(Box::new(move || has.lock().unwrap().is_some())),
+    };
+    (harness(SlideApp::new(s, Services { cloud: Some(cloud), ..Default::default() })), asked)
+}
+
+const CHAT: &str = "Chat about this file: its Nextcloud Talk conversation, in the browser";
+
+#[test]
+fn chat_is_offered_for_nextcloud_presentations_on_a_server_with_talk() {
+    let talk: Arc<Mutex<Option<Result<Json, String>>>> = Arc::new(Mutex::new(Some(Ok(json!({"url": "https://cloud.example/index.php/call/abc"})))));
+    let (mut h, asked) = chat_app("offered", talk.clone());
+    assert!(crate::talk::available(h.state()));
+    h.get_by_role_and_label(Role::Button, CHAT).click();
+    h.run_steps(3);
+    assert_eq!(asked.lock().unwrap().iter().filter(|op| *op == "talk.open").count(), 1);
+    assert!(!h.state().talk.opening(), "answered");
+    assert!(h.state().toast.as_ref().is_some_and(|t| t.text.contains("opened in your browser")));
+
+    // Without Talk on the server, no Chat.
+    *talk.lock().unwrap() = None;
+    h.run_steps(2);
+    assert!(h.query_by_role_and_label(Role::Button, CHAT).is_none());
+    assert!(h.state_mut().run("app.chat", json!({})).is_err());
+}
+
+#[test]
+fn chat_about_an_unshared_presentation_says_to_share_it_first() {
+    let talk = Arc::new(Mutex::new(Some(Err("This presentation has no chat yet: chats are for shared files.".to_string()))));
+    let (mut h, _) = chat_app("unshared", talk);
+    assert_eq!(h.state_mut().run("app.chat", json!({})), Ok(json!({"opening": true})));
+    h.run_steps(3);
+    assert!(h.state().toast.as_ref().is_some_and(|t| t.text.contains("chats are for shared files")));
+}
+
+#[test]
+fn a_presentation_on_this_computer_has_no_chat() {
+    let mut h = harness(SlideApp::new(Session::with_new(), Services::default()));
+    assert!(h.query_by_role_and_label(Role::Button, CHAT).is_none());
+    assert!(h.state_mut().run("app.chat", json!({})).is_err());
 }

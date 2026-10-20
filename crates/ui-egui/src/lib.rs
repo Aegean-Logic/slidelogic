@@ -35,6 +35,7 @@ pub mod show;
 pub mod sorter;
 pub mod squiggles;
 pub mod status;
+pub mod talk;
 pub mod textures;
 pub mod theme;
 pub mod thumbs;
@@ -420,6 +421,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.about", "About SlideLogic", None, "{}"),
     ("app.palette", "Command Palette", Some("Cmd+Shift+P"), "{}"),
     ("app.share", "Share", None, "{}"),
+    ("app.chat", "Chat about this File", None, "{} → {opening}: the presentation's Nextcloud Talk chat, in the browser"),
     ("app.preferences", "Preferences…", Some("Cmd+,"), "{}"),
     ("app.openDialog", "Open…", None, "{purpose?}"),
     ("app.insertPictureDialog", "Picture from File…", None, "{}"),
@@ -507,6 +509,8 @@ pub struct SlideApp {
     pub share: Option<share::ShareDialog>,
     /// `@mentions` in comments: the people picker and the notifications under way.
     pub mentions: mentions::Mentions,
+    /// "Chat about this file" (Nextcloud Talk) being opened.
+    pub talk: talk::Talk,
     pending_urls: Vec<String>,
     /// Text for the system clipboard from a Copy or Cut command, handed over on the next frame.
     pending_copy: Option<String>,
@@ -607,6 +611,7 @@ impl SlideApp {
             cloud_files: cloud_files::CloudFiles::default(),
             share: None,
             mentions: Default::default(),
+            talk: Default::default(),
             doc_window: None,
             sorter: sorter::State::default(),
             slides_focused: false,
@@ -1040,6 +1045,11 @@ impl SlideApp {
                 }
                 self.share = share::ShareDialog::open(self);
                 return Ok(json!({"open": self.share.is_some()}));
+            }
+            // A presentation in Nextcloud, on a server with Talk.
+            "app.chat" => {
+                talk::open(self)?;
+                return Ok(json!({"opening": self.talk.opening()}));
             }
             "app.preferences" => self.dialog = Some(dialogs::Dialog::new("preferences")),
             "app.openDialog" => self.pick_and_open(),
@@ -1894,6 +1904,7 @@ impl SlideApp {
         cloud_files::show(self, &ctx);
         share::show(self, &ctx);
         mentions::show(self, &ctx);
+        talk::show(self, &ctx);
         dialogs::show(self, &ctx);
         menus::palette(self, &ctx);
         for url in std::mem::take(&mut self.pending_urls) {
