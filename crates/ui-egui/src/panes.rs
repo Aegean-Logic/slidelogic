@@ -1277,23 +1277,26 @@ fn comment_card(app: &mut SlideApp, ui: &mut Ui, slide: usize, index: usize, c: 
             if head.response.clicked() {
                 focus_comment(app, slide, index);
             }
-            let body = ui.add(egui::Label::new(&c.text).sense(Sense::click()));
+            let body = crate::mentions::label(ui, "", &c.text, &c.mentions, t.text).interact(Sense::click());
             if body.clicked() {
                 focus_comment(app, slide, index);
             }
             for r in &c.replies {
-                ui.label(egui::RichText::new(format!("↳ {}: {}", r.author, r.text)).color(t.text_dim));
+                crate::mentions::label(ui, &format!("↳ {}: ", r.author), &r.text, &r.mentions, t.text_dim);
             }
             ui.horizontal(|ui| {
                 let id = ui.id().with(("reply", slide, index));
-                let mut txt: String = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
-                let r = ui.add(egui::TextEdit::singleline(&mut txt).hint_text("Reply…").desired_width(ui.available_width() - 70.0));
-                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !txt.trim().is_empty() {
+                let mut draft: crate::mentions::Draft = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
+                let width = ui.available_width() - 70.0;
+                let r = crate::mentions::editor(app, ui, id.with("box"), &mut draft, false, "Reply… (@ to mention)", width);
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !draft.text.trim().is_empty() {
                     focus_comment(app, slide, index);
-                    run(app, "comment.reply", json!({"index": index, "text": txt}));
-                    txt.clear();
+                    if let Ok(answer) = app.run("comment.reply", json!({"index": index, "text": draft.text, "mentions": draft.people()})) {
+                        crate::mentions::posted(app, &answer, &draft.text);
+                    }
+                    draft.clear();
                 }
-                ui.data_mut(|d| d.insert_temp(id, txt));
+                ui.data_mut(|d| d.insert_temp(id, draft));
                 if ui.small_button(if c.resolved { "Reopen" } else { "Resolve" }).clicked() {
                     focus_comment(app, slide, index);
                     run(app, "comment.resolve", json!({"index": index, "resolved": !c.resolved}));

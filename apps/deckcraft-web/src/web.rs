@@ -59,6 +59,10 @@ pub fn start() {
                         if let Some(author) = query_param("author") {
                             crate::host::Bridge::set_author(&mut app, &author);
                         }
+                        // A mention's link: open its comment once the presentation is here.
+                        if let Some(anchor) = query_param("comment") {
+                            app.mentions.go_to_comment(&anchor);
+                        }
                         bridge.post_ready();
                     } else if !q.contains("blank") {
                         if let Err(e) = deckcraft_engine::sample::open_sample(&mut app.session) {

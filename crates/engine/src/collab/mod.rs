@@ -25,8 +25,9 @@ pub mod text;
 /// What this build's ops mean, for hosts to keep a session to one meaning: a copy that reads ops
 /// differently from the others (it ignores a part they send) drifts from them unseen. Raised
 /// whenever an op carries something an older build would misread: 1 whole shapes and notes, 2 text
-/// merging inside a shape, 3 text merging in table cells, grouped shapes and notes.
-pub const PROTOCOL: u32 = 3;
+/// merging inside a shape, 3 text merging in table cells, grouped shapes and notes, 4 comments
+/// with ids and `@mentions`.
+pub const PROTOCOL: u32 = 4;
 
 pub use replica::{Incoming, Outgoing, Replica, Shown};
 pub use seq::SeqEdit;

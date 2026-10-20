@@ -603,6 +603,62 @@ pub struct Comment {
     pub replies: Vec<Comment>,
     /// The shape the comment is attached to.
     pub shape: Option<ShapeId>,
+    /// The comment's GUID (PowerPoint's modern comment `id`, `{…}`), kept across saves: a
+    /// mention's link names it. Empty for comments from files without one.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    /// The people `@mentioned` in the text.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<Mention>,
+}
+
+/// Someone `@mentioned` in a comment: the `@Name` text at `start..start + len` (in characters)
+/// stands for `person`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Mention {
+    pub start: usize,
+    pub len: usize,
+    pub person: Person,
+}
+
+/// A person known to comments: a display name, and who they are at a provider.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Person {
+    pub name: String,
+    /// The person's id at `provider` (a Nextcloud user id, an Office account id…).
+    pub user_id: String,
+    /// Who issued `user_id`: `Nextcloud`, Office's `AD` or `Windows Live`, or `None`.
+    pub provider: String,
+}
+
+/// Finds each person's `@Name` in `text` and returns the mentions that are still there: the
+/// first occurrence per person. A mention whose text was edited is dropped, as Office turns it
+/// back into plain text; `@Ann` at the start of `@Anna` isn't Ann.
+pub fn locate_mentions(text: &str, people: &[Person]) -> Vec<Mention> {
+    let mut out: Vec<Mention> = vec![];
+    for p in people {
+        if p.name.is_empty() || out.iter().any(|m| m.person == *p) {
+            continue;
+        }
+        let needle = format!("@{}", p.name);
+        let mut from = 0;
+        while let Some(i) = text.get(from..).and_then(|t| t.find(&needle)).map(|i| i + from) {
+            let end = i + needle.len();
+            let start = text.get(..i).map(|t| t.chars().count()).unwrap_or(0);
+            let len = needle.chars().count();
+            let next = text.get(end..).and_then(|t| t.chars().next());
+            let overlaps = out.iter().any(|m| start < m.start + m.len && m.start < start + len);
+            if !overlaps && !next.is_some_and(char::is_alphanumeric) {
+                out.push(Mention { start, len, person: p.clone() });
+                break;
+            }
+            from = end;
+        }
+    }
+    out.sort_by_key(|m| m.start);
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
